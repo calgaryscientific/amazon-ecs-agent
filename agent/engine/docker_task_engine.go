@@ -1098,6 +1098,14 @@ func (engine *DockerTaskEngine) createContainer(task *apitask.Task, container *a
 	}
 
 	createContainerBegin := time.Now()
+	hostConfig.Devices = []dockercontainer.DeviceMapping{
+		{
+			PathOnHost:        "class/5B45201D-F2F2-4F3B-85BB-30FF1F953599",
+			PathInContainer:   "",
+			CgroupPermissions: "",
+		},
+	}
+
 	metadata := client.CreateContainer(engine.ctx, config, hostConfig,
 		dockerContainerName, engine.cfg.ContainerCreateTimeout)
 	if metadata.DockerID != "" {
