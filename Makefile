@@ -156,7 +156,7 @@ benchmark-test:
 
 .PHONY: build-image-for-ecr upload-images replicate-images
 
-build-image-for-ecr: netkitten volumes-test image-cleanup-test-images fluentd
+build-image-for-ecr: netkitten volumes-test image-cleanup-test-images fluentd exec-command-agent-test
 
 upload-images: build-image-for-ecr
 	@./scripts/upload-images $(STANDARD_REGION) $(STANDARD_REPOSITORY)
@@ -213,6 +213,7 @@ cni-plugins: get-cni-sources .out-stamp build-ecs-cni-plugins build-vpc-cni-plug
 
 .PHONY: codebuild
 codebuild: .out-stamp
+	./scripts/ci-ecr-pull "us-west-2" 508403128001
 	$(MAKE) release TARGET_OS="linux"
 	TARGET_OS="linux" ./scripts/local-save
 	$(MAKE) docker-release TARGET_OS="windows"
@@ -225,7 +226,11 @@ volumes-test:
 	$(MAKE) -C misc/volumes-test $(MFLAGS)
 
 # Run our 'test' registry needed for integ tests
-test-registry: netkitten volumes-test pause-container image-cleanup-test-images fluentd
+test-registry: netkitten volumes-test pause-container image-cleanup-test-images fluentd exec-command-agent-test
+
+exec-command-agent-test:
+	$(MAKE) -C misc/exec-command-agent-test $(MFLAGS)
+
 	@./scripts/setup-test-registry
 
 .PHONY: fluentd gremlin image-cleanup-test-images
@@ -274,7 +279,7 @@ static-check: gocyclo govet importcheck gogenerate-check
 	# use default checks of staticcheck tool, except style checks (-ST*) and depracation checks (-SA1019)
 	# depracation checks have been left out for now; removing their warnings requires error handling for newer suggested APIs, changes in function signatures and their usages.
 	# https://github.com/dominikh/go-tools/tree/master/cmd/staticcheck
-	staticcheck -tests=false -checks "inherit,-ST*,-SA1019" ./agent/...
+	staticcheck -tests=false -checks "inherit,-ST*,-SA1019,-SA9002" ./agent/...
 
 .PHONY: goimports
 goimports:
@@ -319,6 +324,7 @@ clean:
 	-$(MAKE) -C $(ECS_CNI_REPOSITORY_SRC_DIR) clean
 	-$(MAKE) -C misc/netkitten $(MFLAGS) clean
 	-$(MAKE) -C misc/volumes-test $(MFLAGS) clean
+	-$(MAKE) -C misc/exec-command-agent-test $(MFLAGS) clean
 	-$(MAKE) -C misc/gremlin $(MFLAGS) clean
 	-$(MAKE) -C misc/image-cleanup-test-images $(MFLAGS) clean
 	-$(MAKE) -C misc/container-health $(MFLAGS) clean

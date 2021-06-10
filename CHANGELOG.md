@@ -1,4 +1,37 @@
 # Changelog
+## 1.52.2
+* Enhancement - validate agent config file path permission on Windows [#2866](https://github.com/aws/amazon-ecs-agent/pull/2866)
+* Bug - fix potential goroutine leak when closing websocket connections [#2854](https://github.com/aws/amazon-ecs-agent/pull/2854)
+* Bug - fixes a bug where a task can be stuck in RUNNING indefinitely when a container can't be stopped due to an unresolved docker [bug](https://github.com/moby/moby/issues/41587) (see also the open [PR](https://github.com/moby/moby/pull/41588) in moby to fix the bug).
+
+## 1.52.1
+* Enhancement - Register Windows ECS Instances using specific OSFamilyType [#2859](https://github.com/aws/amazon-ecs-agent/pull/2859)
+* Enhancement - Add retries while retrieving instance-id using EC2 Instance metadata service api [#2861](https://github.com/aws/amazon-ecs-agent/pull/2861)
+
+## 1.52.0
+* Enhancement - Support for ECS EXTERNAL launch type (ECS Anywhere) [#2849](https://github.com/aws/amazon-ecs-agent/pull/2849)
+* Enhancement - Add support for ECS agent to acknowledge server heartbeat messages [#2837](https://github.com/aws/amazon-ecs-agent/pull/2837)
+
+## 1.51.0
+* Enhancement - Add configurable agent healthcheck localhost ip env var. [#2834](https://github.com/aws/amazon-ecs-agent/pull/2834)
+* Bug - Fix bug that could incorrectly clean up pause container before other containers. [#2838](https://github.com/aws/amazon-ecs-agent/pull/2838)
+* Bug - Fix task's network stats by omitting pause container in the network metrics calculation. [#2836](https://github.com/aws/amazon-ecs-agent/pull/2836)
+
+## 1.50.3
+* Enhancement - Eliminate benign docker stats "context canceled" warning messages from logs [#2813](https://github.com/aws/amazon-ecs-agent/pull/2813)
+* Bug - Fix bug where pause container was not always cleaned up [#2824](https://github.com/aws/amazon-ecs-agent/pull/2824)
+
+## 1.50.2
+* Bug - Fix potential deadlock due to seelog's string marshalling of task struct [#2811](https://github.com/aws/amazon-ecs-agent/pull/2811)
+
+## 1.50.1
+* Enhancement - Implementation of structured logs on top of seelog [#2797](https://github.com/aws/amazon-ecs-agent/pull/2797)
+* Bug - Fixed a task status deadlock and pulled container state for cached images when ECS_PULL_DEPENDENT_CONTAINERS_UPFRONT is enabled [#2800](https://github.com/aws/amazon-ecs-agent/pull/2800)
+
+## 1.50.0
+* Feature - Allows ECS customers to execute interactive commands inside containers [#2798](https://github.com/aws/amazon-ecs-agent/pull/2798)
+* Enhancement - Add error responses into TMDEv4 taskWithTags responses [#2789](https://github.com/aws/amazon-ecs-agent/pull/2789)
+* Bug - Fixed the number of cpu units the Agent will reserve for the Linux container instances [#2783](https://github.com/aws/amazon-ecs-agent/pull/2783)
 
 ## 1.49.0
 * Enhancement - Allow task metadata endpoint to return metadata for task when some of the container does not have network metadata [#2747](https://github.com/aws/amazon-ecs-agent/pull/2747)

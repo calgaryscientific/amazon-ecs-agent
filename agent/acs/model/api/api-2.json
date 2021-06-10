@@ -47,7 +47,8 @@
         "requestUri":"/"
       },
       "input":{"shape":"HeartbeatMessage"},
-      "documentation":"Heartbeat is a periodic message that informs the agent all is well."
+      "output":{"shape":"HeartbeatAckRequest"},
+      "documentation":"Heartbeat is a periodic message between the Agent and ECS backend to keep the connection alive."
     },
     "Payload":{
       "name":"Payload",
@@ -219,6 +220,7 @@
         "name":{"shape":"String"},
         "overrides":{"shape":"String"},
         "portMappings":{"shape":"PortMappingList"},
+        "managedAgents":{"shape":"ManagedAgentList"},
         "mountPoints":{"shape":"MountPointList"},
         "volumesFrom":{"shape":"VolumeFromList"},
         "dockerConfig":{"shape":"DockerConfig"},
@@ -416,7 +418,14 @@
     "HeartbeatMessage":{
       "type":"structure",
       "members":{
-        "healthy":{"shape":"Boolean"}
+        "healthy":{"shape":"Boolean"},
+        "messageId":{"shape":"String"}
+      }
+    },
+    "HeartbeatAckRequest":{
+      "type":"structure",
+      "members":{
+        "messageId":{"shape":"String"}
       }
     },
     "HostVolumeProperties":{
@@ -495,6 +504,21 @@
         "message":{"shape":"String"}
       },
       "exception":true
+    },
+    "ManagedAgent":{
+      "type":"structure",
+      "members":{
+        "name":{"shape":"ManagedAgentName"},
+        "properties":{"shape":"StringMap"}
+      }
+    },
+    "ManagedAgentList":{
+      "type":"list",
+      "member":{"shape":"ManagedAgent"}
+    },
+    "ManagedAgentName":{
+      "type":"string",
+      "enum":["ExecuteCommandAgent"]
     },
     "FirelensConfiguration":{
       "type":"structure",

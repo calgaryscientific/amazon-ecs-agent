@@ -30,11 +30,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types"
+
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
+	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient/dockerapi"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient/sdkclientfactory"
 	"github.com/aws/amazon-ecs-agent/agent/statechange"
@@ -193,7 +196,7 @@ func TestStartStopUnpulledImage(t *testing.T) {
 // TestStartStopUnpulledImageDigest ensures that an unpulled image with
 // specified digest is successfully pulled, run, and stopped via docker.
 func TestStartStopUnpulledImageDigest(t *testing.T) {
-	imageDigest := "gcr.io/distroless/python3@sha256:5a82acd4e6ece3978aa58b931699166b1e19e2d3121fceb9238b6356ea5bebaa"
+	imageDigest := "public.ecr.aws/amazonlinux/amazonlinux@sha256:1b6599b4846a765106350130125e2480f6c1cb7791df0ce3e59410362f311259"
 	taskEngine, done, _ := setupWithDefaultConfig(t)
 	defer done()
 	// Ensure this image isn't pulled by deleting it
@@ -944,8 +947,8 @@ func TestFluentdTag(t *testing.T) {
 		HostConfig: aws.String(`{"LogConfig": {
 		"Type": "fluentd",
 		"Config": {
-               "fluentd-address":"0.0.0.0:24224",
-               "tag":"ecs.{{.Name}}.{{.FullID}}"
+			"fluentd-address":"0.0.0.0:24224",
+			"tag":"ecs.{{.Name}}.{{.FullID}}"
 		}
 	}}`)}
 
@@ -976,4 +979,66 @@ func TestFluentdTag(t *testing.T) {
 
 	err = utils.SearchStrInDir(logdir, "ecsfts", logTag)
 	require.NoError(t, err, "failed to find the log tag specified in the task definition")
+}
+
+func TestDockerExecAPI(t *testing.T) {
+	testTimeout := 1 * time.Minute
+	taskEngine, done, _ := setupWithDefaultConfig(t)
+	defer done()
+
+	stateChangeEvents := taskEngine.StateChangeEvents()
+
+	taskArn := "testDockerExec"
+	testTask := createTestTask(taskArn)
+
+	A := createTestContainerWithImageAndName(baseImageForOS, "A")
+
+	A.EntryPoint = &entryPointForOS
+	A.Command = []string{"sleep 30"}
+	A.Essential = true
+
+	testTask.Containers = []*apicontainer.Container{
+		A,
+	}
+	execConfig := types.ExecConfig{
+		User:   "0",
+		Detach: true,
+		Cmd:    []string{"ls"},
+	}
+	go taskEngine.AddTask(testTask)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+
+	finished := make(chan interface{})
+	go func() {
+		// Both containers should start
+		verifyContainerRunningStateChange(t, taskEngine)
+		verifyTaskIsRunning(stateChangeEvents, testTask)
+
+		containerMap, _ := taskEngine.(*DockerTaskEngine).state.ContainerMapByArn(testTask.Arn)
+		dockerID := containerMap[testTask.Containers[0].Name].DockerID
+
+		//Create Exec object on the host
+		execContainerOut, err := taskEngine.(*DockerTaskEngine).client.CreateContainerExec(ctx, dockerID, execConfig, dockerclient.ContainerExecCreateTimeout)
+		require.NoError(t, err)
+		require.NotNil(t, execContainerOut)
+
+		//Start the above Exec process on the host
+		err1 := taskEngine.(*DockerTaskEngine).client.StartContainerExec(ctx, execContainerOut.ID, dockerclient.ContainerExecStartTimeout)
+		require.NoError(t, err1)
+
+		//Inspect the above Exec process on the host to check if the exit code is 0 which indicates successful run of the command
+		execContInspectOut, err := taskEngine.(*DockerTaskEngine).client.InspectContainerExec(ctx, execContainerOut.ID, dockerclient.ContainerExecInspectTimeout)
+		require.NoError(t, err)
+		require.Equal(t, dockerID, execContInspectOut.ContainerID)
+		require.Equal(t, 0, execContInspectOut.ExitCode)
+
+		// Task should stop
+		verifyContainerStoppedStateChange(t, taskEngine)
+		verifyTaskIsStopped(stateChangeEvents, testTask)
+		close(finished)
+	}()
+
+	waitFinished(t, finished, testTimeout)
 }
