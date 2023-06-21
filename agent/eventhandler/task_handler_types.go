@@ -15,8 +15,10 @@ package eventhandler
 
 import (
 	"container/list"
-	"fmt"
 	"sync"
+
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger/field"
 
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
@@ -24,7 +26,7 @@ import (
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
 	"github.com/aws/amazon-ecs-agent/agent/data"
-	"github.com/aws/amazon-ecs-agent/agent/utils/retry"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/retry"
 	"github.com/cihub/seelog"
 )
 
@@ -149,18 +151,19 @@ func (event *sendableEvent) send(
 	backoff retry.Backoff,
 	taskEvents *taskSendableEvents) error {
 
-	seelog.Infof("TaskHandler: Sending %s change: %s", eventType, event.toString())
+	fields := event.toFields()
+	logger.Info("Sending state change to ECS", fields)
 	// Try submitting the change to ECS
 	if err := sendStatusToECS(client, event); err != nil {
-		seelog.Errorf("TaskHandler: Unretriable error submitting %s state change [%s]: %v",
-			eventType, event.toString(), err)
+		fields[field.Error] = err
+		logger.Error("Unretriable error sending state change to ECS", fields)
 		return err
 	}
 	// submitted; ensure we don't retry it
 	event.setSent()
 	// Mark event as sent
 	setChangeSent(event, dataClient)
-	seelog.Debugf("TaskHandler: Submitted task state change: %s", event.toString())
+	logger.Debug("Submitted state change to ECS", fields)
 	taskEvents.events.Remove(eventToSubmit)
 	backoff.Reset()
 	return nil
@@ -222,14 +225,14 @@ func setTaskAttachmentSent(event *sendableEvent, dataClient data.Client) {
 	}
 }
 
-func (event *sendableEvent) toString() string {
+func (event *sendableEvent) toFields() logger.Fields {
 	event.lock.RLock()
 	defer event.lock.RUnlock()
 
 	if event.isContainerEvent {
-		return "ContainerChange: [" + event.containerChange.String() + fmt.Sprintf("] sent: %t", event.containerSent)
+		return event.containerChange.ToFields()
 	} else {
-		return "TaskChange: [" + event.taskChange.String() + fmt.Sprintf("] sent: %t", event.taskSent)
+		return event.taskChange.ToFields()
 	}
 }
 

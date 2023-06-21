@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -137,7 +138,7 @@ func TestIsInternal(t *testing.T) {
 }
 
 // TestSetupExecutionRoleFlag tests whether or not the container appropriately
-//sets the flag for using execution roles
+// sets the flag for using execution roles
 func TestSetupExecutionRoleFlag(t *testing.T) {
 	testCases := []struct {
 		container *Container
@@ -968,4 +969,333 @@ func TestUpdateManagedAgentSentStatus(t *testing.T) {
 
 		})
 	}
+}
+
+func TestRequiresAnyCredentialSpec(t *testing.T) {
+	testCases := []struct {
+		name           string
+		container      *Container
+		expectedOutput bool
+	}{
+		{
+			name:           "hostconfig_nil",
+			container:      &Container{},
+			expectedOutput: false,
+		},
+		{
+			name:           "invalid_case",
+			container:      getContainer("invalid", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "empty_sec_opt",
+			container:      getContainer("{\"NetworkMode\":\"bridge\"}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "missing_credentialspec",
+			container:      getContainer("{\"SecurityOpt\": [\"invalid-sec-opt\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "wrong_prefix",
+			container:      getContainer("{\"SecurityOpt\": [\"credential2spec:file://gmsa_gmsa-acct.json\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_file",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:file://gmsa_gmsa-acct.json\"]}", nil),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_s3",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:s3:::${BucketName}/${ObjectName}\"]}", nil),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_ssm",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/parameter_name\"]}", nil),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_file_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspec:file://gmsa-acct.json"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_file_domainless_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:file://gmsa-acct.json"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_s3_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspec:arn:aws:s3:::${BucketName}/${ObjectName}"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_s3_domainless_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:s3:::${BucketName}/${ObjectName}"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_ssm_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:ssm:region:aws_account_id:parameter/parameter_name"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_ssm_domainless_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:ssm:region:aws_account_id:parameter/parameter_name"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "host_config_credentialspecs_file",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:file://hostconfig.json\"]}", []string{"credentialspecdomainless:file://credentialspecs.json"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "host_config_credentialspecs_s3",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:s3:::hostconfig.json\"]}", []string{"credentialspec:arn:aws:s3:::credentialspecs.json"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "host_config_credentialspecs_ssm",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/hostconfig.json\"]}", []string{"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/credentialspecs.json"}),
+			expectedOutput: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expectedOutput, tc.container.RequiresAnyCredentialSpec())
+		})
+	}
+}
+
+func TestRequiresDomainlessCredentialSpec(t *testing.T) {
+	testCases := []struct {
+		name           string
+		container      *Container
+		expectedOutput bool
+	}{
+		{
+			name:           "hostconfig_nil",
+			container:      &Container{},
+			expectedOutput: false,
+		},
+		{
+			name:           "invalid_case",
+			container:      getContainer("invalid", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "empty_sec_opt",
+			container:      getContainer("{\"NetworkMode\":\"bridge\"}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "missing_credentialspec",
+			container:      getContainer("{\"SecurityOpt\": [\"invalid-sec-opt\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "wrong_prefix",
+			container:      getContainer("{\"SecurityOpt\": [\"credential2spec:file://gmsa_gmsa-acct.json\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_file",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:file://gmsa_gmsa-acct.json\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_s3",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:s3:::${BucketName}/${ObjectName}\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_ssm",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/parameter_name\"]}", nil),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_file_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspec:file://gmsa-acct.json"}),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_file_domainless_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:file://gmsa-acct.json"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_s3_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspec:arn:aws:s3:::${BucketName}/${ObjectName}"}),
+			expectedOutput: false,
+		},
+		{
+			name:           "valid_credentialspec_s3_domainless_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:s3:::${BucketName}/${ObjectName}"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_ssm_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:ssm:region:aws_account_id:parameter/parameter_name"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "valid_credentialspec_ssm_domainless_not_hostconfig",
+			container:      getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:ssm:region:aws_account_id:parameter/parameter_name"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "host_config_credentialspecs_file",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:file://hostconfig.json\"]}", []string{"credentialspecdomainless:file://credentialspecs.json"}),
+			expectedOutput: true,
+		},
+		{
+			name:           "host_config_credentialspecs_s3",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:s3:::hostconfig.json\"]}", []string{"credentialspec:arn:aws:s3:::credentialspecs.json"}),
+			expectedOutput: false,
+		},
+		{
+			name:           "host_config_credentialspecs_ssm",
+			container:      getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/hostconfig.json\"]}", []string{"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/credentialspecs.json"}),
+			expectedOutput: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expectedOutput, tc.container.RequiresDomainlessCredentialSpec())
+		})
+	}
+}
+
+func TestGetCredentialSpecErr(t *testing.T) {
+	testCases := []struct {
+		name                 string
+		container            *Container
+		expectedOutputString string
+		expectedErrorString  string
+	}{
+		{
+			name:                 "hostconfig_nil",
+			container:            &Container{},
+			expectedOutputString: "",
+			expectedErrorString:  "unable to obtain credentialspec from both hostConfig and credentialSpecs",
+		},
+		{
+			name:                 "invalid_case",
+			container:            getContainer("invalid", nil),
+			expectedOutputString: "",
+			expectedErrorString:  "unable to obtain credentialspec from both hostConfig and credentialSpecs",
+		},
+		{
+			name:                 "empty_sec_opt",
+			container:            getContainer("{\"NetworkMode\":\"bridge\"}", nil),
+			expectedOutputString: "",
+			expectedErrorString:  "unable to obtain credentialspec from both hostConfig and credentialSpecs",
+		},
+		{
+			name:                 "missing_credentialspec",
+			container:            getContainer("{\"SecurityOpt\": [\"invalid-sec-opt\"]}", nil),
+			expectedOutputString: "",
+			expectedErrorString:  "unable to obtain credentialspec from both hostConfig and credentialSpecs",
+		},
+		{
+			name:                 "invalid_case_credential_specs",
+			container:            getContainer("{\"NetworkMode\":\"bridge\"}", []string{"invalid"}),
+			expectedOutputString: "",
+			expectedErrorString:  "unable to obtain credentialspec from both hostConfig and credentialSpecs",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			expectedOutputStr, err := tc.container.GetCredentialSpec()
+			assert.Equal(t, tc.expectedOutputString, expectedOutputStr)
+			assert.EqualError(t, err, tc.expectedErrorString)
+		})
+	}
+}
+
+func TestGetCredentialSpec(t *testing.T) {
+	testCases := []struct {
+		name                 string
+		container            *Container
+		expectedOutputString string
+	}{
+		{
+			name:                 "hostconfig_file",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:file://gmsa_gmsa-acct.json\"]}", nil),
+			expectedOutputString: "credentialspec:file://gmsa_gmsa-acct.json",
+		},
+		{
+			name:                 "hostconfig_file_multiple",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:file://gmsa_gmsa-acct.json\", \"credentialspec:file://gmsa_gmsa-acct2.json\"]}", nil),
+			expectedOutputString: "credentialspec:file://gmsa_gmsa-acct.json",
+		},
+		{
+			name:                 "hostconfig_s3",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:s3:::${BucketName}/${ObjectName}\"]}", nil),
+			expectedOutputString: "credentialspec:arn:aws:s3:::${BucketName}/${ObjectName}",
+		},
+		{
+			name:                 "hostconfig_ssm",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/parameter_name\"]}", nil),
+			expectedOutputString: "credentialspec:arn:aws:ssm:region:aws_account_id:parameter/parameter_name",
+		},
+		{
+			name:                 "credentialspecs_file",
+			container:            getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:file://gmsa_gmsa-acct.json"}),
+			expectedOutputString: "credentialspecdomainless:file://gmsa_gmsa-acct.json",
+		},
+		{
+			name:                 "credentialspecs_file_multiple",
+			container:            getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:file://gmsa_gmsa-acct.json", "credentialspecdomainless:file://gmsa_gmsa-acct2.json"}),
+			expectedOutputString: "credentialspecdomainless:file://gmsa_gmsa-acct.json",
+		},
+		{
+			name:                 "credentialspecs_s3",
+			container:            getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:s3:::${BucketName}/${ObjectName}"}),
+			expectedOutputString: "credentialspecdomainless:arn:aws:s3:::${BucketName}/${ObjectName}",
+		},
+		{
+			name:                 "credentialspecs_ssm",
+			container:            getContainer("{\"SecurityOpt\": []}", []string{"credentialspecdomainless:arn:aws:ssm:region:aws_account_id:parameter/parameter_name"}),
+			expectedOutputString: "credentialspecdomainless:arn:aws:ssm:region:aws_account_id:parameter/parameter_name",
+		},
+		{
+			name:                 "host_config_credentialspecs_file",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:file://hostconfig.json\"]}", []string{"credentialspecdomainless:file://credentialspecs.json"}),
+			expectedOutputString: "credentialspecdomainless:file://credentialspecs.json",
+		},
+		{
+			name:                 "host_config_credentialspecs_s3",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:s3:::hostconfig.json\"]}", []string{"credentialspec:arn:aws:s3:::credentialspecs.json"}),
+			expectedOutputString: "credentialspec:arn:aws:s3:::credentialspecs.json",
+		},
+		{
+			name:                 "host_config_credentialspecs_ssm",
+			container:            getContainer("{\"SecurityOpt\": [\"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/hostconfig.json\"]}", []string{"credentialspec:arn:aws:ssm:region:aws_account_id:parameter/credentialspecs.json"}),
+			expectedOutputString: "credentialspec:arn:aws:ssm:region:aws_account_id:parameter/credentialspecs.json",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			expectedOutputStr, err := tc.container.GetCredentialSpec()
+			assert.NoError(t, err)
+			assert.Equal(t, tc.expectedOutputString, expectedOutputStr)
+		})
+	}
+}
+
+func getContainer(hostConfig string, credentialSpecs []string) *Container {
+	c := &Container{
+		Name: "c",
+	}
+	c.DockerConfig.HostConfig = &hostConfig
+	c.CredentialSpecs = credentialSpecs
+	return c
 }

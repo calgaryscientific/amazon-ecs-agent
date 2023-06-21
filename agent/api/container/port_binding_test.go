@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -19,7 +20,8 @@ import (
 	"reflect"
 	"testing"
 
-	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
+	apierrors "github.com/aws/amazon-ecs-agent/ecs-agent/api/errors"
+
 	"github.com/docker/go-connections/nat"
 )
 

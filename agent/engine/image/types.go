@@ -20,8 +20,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger/field"
+
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	"github.com/cihub/seelog"
 )
 
 type Image struct {
@@ -55,7 +57,11 @@ type ImageState struct {
 func (imageState *ImageState) UpdateContainerReference(container *apicontainer.Container) {
 	imageState.lock.Lock()
 	defer imageState.lock.Unlock()
-	seelog.Infof("Updating container reference %v in Image State - %v", container.Name, imageState.Image.ImageID)
+	logger.Info("Updating container reference in image state", logger.Fields{
+		field.Container: container.Name,
+		field.Image:     container.Image,
+		"state":         imageState.Image.ImageID,
+	})
 	imageState.Containers = append(imageState.Containers, container)
 }
 
@@ -64,7 +70,10 @@ func (imageState *ImageState) AddImageName(imageName string) {
 	imageState.lock.Lock()
 	defer imageState.lock.Unlock()
 	if !imageState.HasImageName(imageName) {
-		seelog.Infof("Adding image name- %v to Image state- %v", imageName, imageState.Image.ImageID)
+		logger.Info("Adding image to state", logger.Fields{
+			field.Image: imageName,
+			"state":     imageState.Image.ImageID,
+		})
 		imageState.Image.Names = append(imageState.Image.Names, imageName)
 	}
 }
@@ -125,7 +134,11 @@ func (imageState *ImageState) RemoveContainerReference(container *apicontainer.C
 	for i := range imageState.Containers {
 		if imageState.Containers[i].Name == container.Name {
 			// Container reference found; hence remove it
-			seelog.Infof("Removing Container Reference: %v from Image State- %v", container.Name, imageState.Image.ImageID)
+			logger.Info("Removing container reference from image state", logger.Fields{
+				field.Container: container.Name,
+				field.Image:     container.Image,
+				"state":         imageState.Image.ImageID,
+			})
 			imageState.Containers = append(imageState.Containers[:i], imageState.Containers[i+1:]...)
 			// Update the last used time for the image
 			imageState.LastUsedAt = time.Now()
@@ -175,5 +188,27 @@ func (imageState *ImageState) String() string {
 		image = imageState.Image.String()
 	}
 	return fmt.Sprintf("Image: [%s] referenced by %d containers; PulledAt: %s; LastUsedAt: %s; PullSucceeded: %t",
-		image, len(imageState.Containers), imageState.PulledAt.String(), imageState.LastUsedAt.String(), imageState.PullSucceeded)
+		image, len(imageState.Containers), imageState.PulledAt.UTC().Format(time.RFC3339),
+		imageState.LastUsedAt.UTC().Format(time.RFC3339), imageState.PullSucceeded)
+}
+
+func (imageState *ImageState) Fields() logger.Fields {
+	imageID := ""
+	names := []string{}
+	size := int64(-1)
+	if imageState.Image != nil {
+		imageID = imageState.Image.ImageID
+		names = imageState.Image.Names
+		size = imageState.Image.Size
+	}
+
+	return logger.Fields{
+		field.ImageID:            imageID,
+		field.ImageNames:         names,
+		field.ImageSizeBytes:     size,
+		"referencedBy":           len(imageState.Containers),
+		field.ImagePulledAt:      imageState.PulledAt.UTC().Format(time.RFC3339),
+		field.ImageLastUsedAt:    imageState.LastUsedAt.UTC().Format(time.RFC3339),
+		field.ImagePullSucceeded: imageState.PullSucceeded,
+	}
 }

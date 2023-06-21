@@ -1,3 +1,4 @@
+//go:build linux && unit
 // +build linux,unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -36,7 +37,7 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/taskresource/cgroup"
 	resourcestatus "github.com/aws/amazon-ecs-agent/agent/taskresource/status"
 	"github.com/aws/amazon-ecs-agent/agent/taskresource/volume"
-	mock_ttime "github.com/aws/amazon-ecs-agent/agent/utils/ttime/mocks"
+	mock_ttime "github.com/aws/amazon-ecs-agent/ecs-agent/utils/ttime/mocks"
 	"github.com/golang/mock/gomock"
 
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
@@ -286,7 +287,7 @@ func TestStartResourceTransitionsEmpty(t *testing.T) {
 	}
 }
 
-//TestEFSNextStateWithTransitionDependencies verifies the dependencies are resolved correctly for task resource
+// TestEFSNextStateWithTransitionDependencies verifies the dependencies are resolved correctly for task resource
 func TestEFSVolumeNextStateWithTransitionDependencies(t *testing.T) {
 	testCases := []struct {
 		name                         string
@@ -428,7 +429,7 @@ func TestCleanupExecEnabledTask(t *testing.T) {
 	dockerContainer := &apicontainer.DockerContainer{
 		DockerName: "dockerContainer",
 	}
-	tID, _ := mTask.Task.GetID()
+	tID := mTask.Task.GetID()
 	removeAll = func(path string) error {
 		assert.Equal(t, fmt.Sprintf("/log/exec/%s", tID), path)
 		return nil

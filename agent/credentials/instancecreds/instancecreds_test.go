@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -25,11 +26,10 @@ import (
 
 func TestGetCredentials(t *testing.T) {
 	credentialChain = nil
-	credsA := GetCredentials()
+	credsA := GetCredentials(false)
 	require.NotNil(t, credsA)
-	credsB := GetCredentials()
+	credsB := GetCredentials(true)
 	require.NotNil(t, credsB)
-	require.Equal(t, credsA, credsB)
 }
 
 // test that env vars override all other provider types
@@ -44,7 +44,7 @@ func TestGetCredentials_EnvVars(t *testing.T) {
 	defer os.Setenv("AWS_ACCESS_KEY_ID", origAKID)
 	defer os.Setenv("AWS_SECRET_ACCESS_KEY", origSecret)
 
-	creds := GetCredentials()
+	creds := GetCredentials(false)
 	require.NotNil(t, creds)
 	v, err := creds.Get()
 	require.NoError(t, err)
@@ -81,7 +81,7 @@ aws_secret_access_key = TESTFILESECRET
 	// reset before exiting
 	defer os.Setenv("AWS_SHARED_CREDENTIALS_FILE", origEnv)
 
-	creds := GetCredentials()
+	creds := GetCredentials(false)
 	require.NotNil(t, creds)
 	v, err := creds.Get()
 	require.NoError(t, err)

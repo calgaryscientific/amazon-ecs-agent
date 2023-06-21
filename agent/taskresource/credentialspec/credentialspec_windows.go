@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -16,29 +17,28 @@
 package credentialspec
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	"github.com/aws/amazon-ecs-agent/agent/api/task/status"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
+	asmfactory "github.com/aws/amazon-ecs-agent/agent/asm/factory"
 	"github.com/aws/amazon-ecs-agent/agent/s3"
 	s3factory "github.com/aws/amazon-ecs-agent/agent/s3/factory"
 	"github.com/aws/amazon-ecs-agent/agent/ssm"
 	ssmfactory "github.com/aws/amazon-ecs-agent/agent/ssm/factory"
-	"github.com/aws/amazon-ecs-agent/agent/taskresource"
-	resourcestatus "github.com/aws/amazon-ecs-agent/agent/taskresource/status"
 	"github.com/aws/amazon-ecs-agent/agent/utils/ioutilwrapper"
 	"github.com/aws/amazon-ecs-agent/agent/utils/oswrapper"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	internalarn "github.com/aws/amazon-ecs-agent/ecs-agent/utils/arn"
 	"github.com/aws/aws-sdk-go/aws/arn"
+
 	"github.com/cihub/seelog"
 	"github.com/pkg/errors"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
@@ -51,67 +51,62 @@ const (
 	// Environment variables to setup resource location
 	envProgramData              = "ProgramData"
 	dockerCredentialSpecDataDir = "docker/credentialspecs"
+	ecsCcgPluginRegistryKeyRoot = `System\CurrentControlSet\Services\AmazonECSCCGPlugin`
+	regKeyPathFormat            = `HKEY_LOCAL_MACHINE\` + ecsCcgPluginRegistryKeyRoot + `\%s`
+
+	credentialSpecParseErrorMsgTemplate = "Unable to parse %s from credential spec"
+	untypedMarshallErrorMsgTemplate     = "Unable to marshal untyped object %s to type %s"
 )
+
+var (
+	// For ease of unit testing
+	osWriteFileImpl                           = os.WriteFile
+	osReadFileImpl                            = os.ReadFile
+	osRemoveImpl                              = os.Remove
+	readCredentialSpecImpl                    = readCredentialSpec
+	writeCredentialSpecImpl                   = writeCredentialSpec
+	readWriteDomainlessCredentialSpecImpl     = readWriteDomainlessCredentialSpec
+	setTaskExecutionCredentialsRegKeysImpl    = SetTaskExecutionCredentialsRegKeys
+	handleNonFileDomainlessGMSACredSpecImpl   = handleNonFileDomainlessGMSACredSpec
+	deleteTaskExecutionCredentialsRegKeysImpl = deleteTaskExecutionCredentialsRegKeys
+)
+
+type pluginInput struct {
+	CredentialArn string `json:"credentialArn,omitempty"`
+	RegKeyPath    string `json:"regKeyPath,omitempty"`
+}
 
 // CredentialSpecResource is the abstraction for credentialspec resources
 type CredentialSpecResource struct {
-	taskARN                string
-	region                 string
-	executionCredentialsID string
-	credentialsManager     credentials.Manager
-	ioutil                 ioutilwrapper.IOUtil
-	createdAt              time.Time
-	desiredStatusUnsafe    resourcestatus.ResourceStatus
-	knownStatusUnsafe      resourcestatus.ResourceStatus
-	// appliedStatus is the status that has been "applied" (e.g., we've called some
-	// operation such as 'Create' on the resource) but we don't yet know that the
-	// application was successful, which may then change the known status. This is
-	// used while progressing resource states in progressTask() of task manager
-	appliedStatus                      resourcestatus.ResourceStatus
-	resourceStatusToTransitionFunction map[resourcestatus.ResourceStatus]func() error
-	// terminalReason should be set for resource creation failures. This ensures
-	// the resource object carries some context for why provisioning failed.
-	terminalReason     string
-	terminalReasonOnce sync.Once
-	// ssmClientCreator is a factory interface that creates new SSM clients. This is
-	// needed mostly for testing.
-	ssmClientCreator ssmfactory.SSMClientCreator
-	// s3ClientCreator is a factory interface that creates new S3 clients. This is
-	// needed mostly for testing.
-	s3ClientCreator s3factory.S3ClientCreator
+	*CredentialSpecResourceCommon
+	ioutil ioutilwrapper.IOUtil
 	// credentialSpecResourceLocation is the location for all the tasks' credentialspec artifacts
 	credentialSpecResourceLocation string
-	// required for processing credentialspecs
-	// Example item := credentialspec:file://credentialspec.json
-	requiredCredentialSpecs []string
-	// map to transform credentialspec values, key is a input credentialspec
-	// Examples:
-	// * key := credentialspec:file://credentialspec.json, value := credentialspec=file://credentialspec.json
-	// * key := credentialspec:s3ARN, value := credentialspec=file://CredentialSpecResourceLocation/s3_taskARN_fileName.json
-	// * key := credentialspec:ssmARN, value := credentialspec=file://CredentialSpecResourceLocation/ssm_taskARN_param.json
-	CredSpecMap map[string]string
-	// lock is used for fields that are accessed and updated concurrently
-	lock sync.RWMutex
+	isDomainlessGMSATask           bool
 }
 
 // NewCredentialSpecResource creates a new CredentialSpecResource object
 func NewCredentialSpecResource(taskARN, region string,
-	credentialSpecs []string,
 	executionCredentialsID string,
 	credentialsManager credentials.Manager,
 	ssmClientCreator ssmfactory.SSMClientCreator,
-	s3ClientCreator s3factory.S3ClientCreator) (*CredentialSpecResource, error) {
+	s3ClientCreator s3factory.S3ClientCreator,
+	asmClientCreator asmfactory.ClientCreator,
+	credentialSpecContainerMap map[string]string) (*CredentialSpecResource, error) {
 
 	s := &CredentialSpecResource{
-		taskARN:                 taskARN,
-		region:                  region,
-		requiredCredentialSpecs: credentialSpecs,
-		credentialsManager:      credentialsManager,
-		executionCredentialsID:  executionCredentialsID,
-		ssmClientCreator:        ssmClientCreator,
-		s3ClientCreator:         s3ClientCreator,
-		CredSpecMap:             make(map[string]string),
-		ioutil:                  ioutilwrapper.NewIOUtil(),
+		CredentialSpecResourceCommon: &CredentialSpecResourceCommon{
+			taskARN:                    taskARN,
+			region:                     region,
+			credentialsManager:         credentialsManager,
+			executionCredentialsID:     executionCredentialsID,
+			ssmClientCreator:           ssmClientCreator,
+			s3ClientCreator:            s3ClientCreator,
+			CredSpecMap:                make(map[string]string),
+			credentialSpecContainerMap: credentialSpecContainerMap,
+		},
+		ioutil:               ioutilwrapper.NewIOUtil(),
+		isDomainlessGMSATask: false,
 	}
 
 	err := s.setCredentialSpecResourceLocation()
@@ -121,189 +116,6 @@ func NewCredentialSpecResource(taskARN, region string,
 
 	s.initStatusToTransition()
 	return s, nil
-}
-
-func (cs *CredentialSpecResource) initStatusToTransition() {
-	resourceStatusToTransitionFunction := map[resourcestatus.ResourceStatus]func() error{
-		resourcestatus.ResourceStatus(CredentialSpecCreated): cs.Create,
-	}
-	cs.resourceStatusToTransitionFunction = resourceStatusToTransitionFunction
-}
-
-func (cs *CredentialSpecResource) Initialize(resourceFields *taskresource.ResourceFields,
-	taskKnownStatus status.TaskStatus,
-	taskDesiredStatus status.TaskStatus) {
-
-	cs.credentialsManager = resourceFields.CredentialsManager
-	cs.ssmClientCreator = resourceFields.SSMClientCreator
-	cs.s3ClientCreator = resourceFields.S3ClientCreator
-	cs.initStatusToTransition()
-}
-
-// GetTerminalReason returns an error string to propagate up through to task
-// state change messages
-func (cs *CredentialSpecResource) GetTerminalReason() string {
-	return cs.terminalReason
-}
-
-func (cs *CredentialSpecResource) setTerminalReason(reason string) {
-	cs.terminalReasonOnce.Do(func() {
-		seelog.Debugf("credentialspec resource: setting terminal reason for credentialspec resource in task: [%s]", cs.taskARN)
-		cs.terminalReason = reason
-	})
-}
-
-// GetDesiredStatus safely returns the desired status of the task
-func (cs *CredentialSpecResource) GetDesiredStatus() resourcestatus.ResourceStatus {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.desiredStatusUnsafe
-}
-
-// SetDesiredStatus safely sets the desired status of the resource
-func (cs *CredentialSpecResource) SetDesiredStatus(status resourcestatus.ResourceStatus) {
-	cs.lock.Lock()
-	defer cs.lock.Unlock()
-
-	cs.desiredStatusUnsafe = status
-}
-
-// DesiredTerminal returns true if the credentialspec's desired status is REMOVED
-func (cs *CredentialSpecResource) DesiredTerminal() bool {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.desiredStatusUnsafe == resourcestatus.ResourceStatus(CredentialSpecRemoved)
-}
-
-// KnownCreated returns true if the credentialspec's known status is CREATED
-func (cs *CredentialSpecResource) KnownCreated() bool {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.knownStatusUnsafe == resourcestatus.ResourceStatus(CredentialSpecCreated)
-}
-
-// TerminalStatus returns the last transition state of credentialspec
-func (cs *CredentialSpecResource) TerminalStatus() resourcestatus.ResourceStatus {
-	return resourcestatus.ResourceStatus(CredentialSpecRemoved)
-}
-
-// NextKnownState returns the state that the resource should
-// progress to based on its `KnownState`.
-func (cs *CredentialSpecResource) NextKnownState() resourcestatus.ResourceStatus {
-	return cs.GetKnownStatus() + 1
-}
-
-// ApplyTransition calls the function required to move to the specified status
-func (cs *CredentialSpecResource) ApplyTransition(nextState resourcestatus.ResourceStatus) error {
-	transitionFunc, ok := cs.resourceStatusToTransitionFunction[nextState]
-	if !ok {
-		err := errors.Errorf("resource [%s]: transition to %s impossible", cs.GetName(),
-			cs.StatusString(nextState))
-		cs.setTerminalReason(err.Error())
-		return err
-	}
-
-	return transitionFunc()
-}
-
-// SteadyState returns the transition state of the resource defined as "ready"
-func (cs *CredentialSpecResource) SteadyState() resourcestatus.ResourceStatus {
-	return resourcestatus.ResourceStatus(CredentialSpecCreated)
-}
-
-// SetKnownStatus safely sets the currently known status of the resource
-func (cs *CredentialSpecResource) SetKnownStatus(status resourcestatus.ResourceStatus) {
-	cs.lock.Lock()
-	defer cs.lock.Unlock()
-
-	cs.knownStatusUnsafe = status
-	cs.updateAppliedStatusUnsafe(status)
-}
-
-// updateAppliedStatusUnsafe updates the resource transitioning status
-func (cs *CredentialSpecResource) updateAppliedStatusUnsafe(knownStatus resourcestatus.ResourceStatus) {
-	if cs.appliedStatus == resourcestatus.ResourceStatus(CredentialSpecStatusNone) {
-		return
-	}
-
-	// Check if the resource transition has already finished
-	if cs.appliedStatus <= knownStatus {
-		cs.appliedStatus = resourcestatus.ResourceStatus(CredentialSpecStatusNone)
-	}
-}
-
-// SetAppliedStatus sets the applied status of resource and returns whether
-// the resource is already in a transition
-func (cs *CredentialSpecResource) SetAppliedStatus(status resourcestatus.ResourceStatus) bool {
-	cs.lock.Lock()
-	defer cs.lock.Unlock()
-
-	if cs.appliedStatus != resourcestatus.ResourceStatus(CredentialSpecStatusNone) {
-		// return false to indicate the set operation failed
-		return false
-	}
-
-	cs.appliedStatus = status
-	return true
-}
-
-// GetKnownStatus safely returns the currently known status of the task
-func (cs *CredentialSpecResource) GetKnownStatus() resourcestatus.ResourceStatus {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.knownStatusUnsafe
-}
-
-// StatusString returns the string of the cgroup resource status
-func (cs *CredentialSpecResource) StatusString(status resourcestatus.ResourceStatus) string {
-	return CredentialSpecStatus(status).String()
-}
-
-// SetCreatedAt sets the timestamp for resource's creation time
-func (cs *CredentialSpecResource) SetCreatedAt(createdAt time.Time) {
-	if createdAt.IsZero() {
-		return
-	}
-	cs.lock.Lock()
-	defer cs.lock.Unlock()
-
-	cs.createdAt = createdAt
-}
-
-// GetCreatedAt sets the timestamp for resource's creation time
-func (cs *CredentialSpecResource) GetCreatedAt() time.Time {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.createdAt
-}
-
-// getRequiredCredentialSpecs returns the requiredCredentialSpecs field of credentialspec task resource
-func (cs *CredentialSpecResource) getRequiredCredentialSpecs() []string {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.requiredCredentialSpecs
-}
-
-// getExecutionCredentialsID returns the execution role's credential ID
-func (cs *CredentialSpecResource) getExecutionCredentialsID() string {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.executionCredentialsID
-}
-
-// GetName safely returns the name of the resource
-func (cs *CredentialSpecResource) GetName() string {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return ResourceName
 }
 
 // Create is used to create all the credentialspec resources for a given task
@@ -316,11 +128,15 @@ func (cs *CredentialSpecResource) Create() error {
 		iamCredentials = executionCredentials.GetIAMRoleCredentials()
 	}
 
-	for _, credSpecStr := range cs.requiredCredentialSpecs {
-		credSpecSplit := strings.SplitAfterN(credSpecStr, "credentialspec:", 2)
+	for credSpecStr := range cs.credentialSpecContainerMap {
+		credSpecSplit := strings.SplitAfterN(credSpecStr, ":", 2)
 		if len(credSpecSplit) != 2 {
 			seelog.Errorf("Invalid credentialspec: %s", credSpecStr)
 			continue
+		}
+		credSpecPrefix := credSpecSplit[0]
+		if credSpecPrefix == "credentialspecdomainless:" {
+			cs.isDomainlessGMSATask = true
 		}
 		credSpecValue := credSpecSplit[1]
 
@@ -362,22 +178,59 @@ func (cs *CredentialSpecResource) Create() error {
 		}
 	}
 
+	if cs.isDomainlessGMSATask {
+		// The domainless gMSA Windows Plugin needs the execution role credentials to pull customer secrets
+		err = setTaskExecutionCredentialsRegKeysImpl(iamCredentials, cs.CredentialSpecResourceCommon.taskARN)
+		if err != nil {
+			cs.setTerminalReason(err.Error())
+			return err
+		}
+	}
+
 	return nil
 }
 
 func (cs *CredentialSpecResource) handleCredentialspecFile(credentialspec string) error {
-	credSpecSplit := strings.SplitAfterN(credentialspec, "credentialspec:", 2)
+	credSpecSplit := strings.SplitAfterN(credentialspec, ":", 2)
 	if len(credSpecSplit) != 2 {
 		seelog.Errorf("Invalid credentialspec: %s", credentialspec)
 		return errors.New("invalid credentialspec file specification")
 	}
+	credSpecPrefix := credSpecSplit[0]
 	credSpecFile := credSpecSplit[1]
 
 	if !strings.HasPrefix(credSpecFile, "file://") {
 		return errors.New("invalid credentialspec file specification")
 	}
 
-	dockerHostconfigSecOptCredSpec := strings.Replace(credentialspec, "credentialspec:", "credentialspec=", 1)
+	if credSpecPrefix == "credentialspecdomainless:" {
+		relativeFilePath := strings.TrimPrefix(credSpecFile, "file://")
+		dir, originalFileName := filepath.Split(relativeFilePath)
+
+		// Generate unique filename using taskId, containerName, credspecfile original name
+		taskId, err := internalarn.TaskIdFromArn(cs.taskARN)
+		if err != nil {
+			cs.setTerminalReason(err.Error())
+			return err
+		}
+		containerName, ok := cs.credentialSpecContainerMap[credentialspec]
+		if !ok {
+			return errors.New(fmt.Sprintf("Unable to retrieve containerName from credentialSpecContainerMap. No such key %s", credentialspec))
+		}
+
+		// We need a different outfile in order to avoid modifying the customers original credentialspec
+		outFile := fmt.Sprintf("%s_%s_%s", taskId, containerName, originalFileName)
+		credSpecFile = "file://" + filepath.Join(dir, outFile)
+
+		// Fill in appropriate domainless gMSA fields
+		err = readWriteDomainlessCredentialSpecImpl(filepath.Join(cs.credentialSpecResourceLocation, dir, originalFileName), filepath.Join(cs.credentialSpecResourceLocation, dir, outFile), cs.taskARN)
+		if err != nil {
+			cs.setTerminalReason(err.Error())
+			return err
+		}
+	}
+
+	dockerHostconfigSecOptCredSpec := "credentialspec=" + credSpecFile
 	cs.updateCredSpecMapping(credentialspec, dockerHostconfigSecOptCredSpec)
 
 	return nil
@@ -402,7 +255,7 @@ func (cs *CredentialSpecResource) handleS3CredentialspecFile(originalCredentials
 		return err
 	}
 
-	s3Client, err := cs.s3ClientCreator.NewS3ClientForBucket(bucket, cs.region, iamCredentials)
+	s3Client, err := cs.s3ClientCreator.NewS3ManagerClient(bucket, cs.region, iamCredentials)
 	if err != nil {
 		cs.setTerminalReason(err.Error())
 		return err
@@ -419,6 +272,12 @@ func (cs *CredentialSpecResource) handleS3CredentialspecFile(originalCredentials
 	err = cs.writeS3File(func(file oswrapper.File) error {
 		return s3.DownloadFile(bucket, key, s3DownloadTimeout, file, s3Client)
 	}, localCredSpecFilePath)
+	if err != nil {
+		cs.setTerminalReason(err.Error())
+		return err
+	}
+
+	err = handleNonFileDomainlessGMSACredSpecImpl(originalCredentialspec, localCredSpecFilePath, cs.taskARN)
 	if err != nil {
 		cs.setTerminalReason(err.Error())
 		return err
@@ -445,29 +304,55 @@ func (cs *CredentialSpecResource) handleSSMCredentialspecFile(originalCredential
 
 	ssmClient := cs.ssmClientCreator.NewSSMClient(cs.region, iamCredentials)
 
-	ssmParam := filepath.Base(parsedARN.Resource)
-	ssmParams := []string{ssmParam}
-
+	// An SSM ARN is in the form of arn:aws:ssm:us-west-2:123456789012:parameter/a/b. The parsed ARN value
+	// would be parameter/a/b. The following code gets the SSM parameter by passing "/a/b" value to the
+	// GetParametersFromSSM method to retrieve the value in the parameter.
+	ssmParam := strings.SplitAfterN(parsedARN.Resource, "parameter", 2)
+	if len(ssmParam) != 2 {
+		err := fmt.Errorf("the provided SSM parameter:%s is in an invalid format", parsedARN.Resource)
+		cs.setTerminalReason(err.Error())
+		return err
+	}
+	ssmParams := []string{ssmParam[1]}
 	ssmParamMap, err := ssm.GetParametersFromSSM(ssmParams, ssmClient)
 	if err != nil {
 		cs.setTerminalReason(err.Error())
 		return err
 	}
 
-	ssmParamData := ssmParamMap[ssmParam]
+	ssmParamData := ssmParamMap[ssmParam[1]]
 	taskArnSplit := strings.Split(cs.taskARN, "/")
 	length := len(taskArnSplit)
 	if length < 2 {
 		return errors.New("Failed to retrieve taskId from taskArn.")
 	}
-	localCredSpecFilePath := fmt.Sprintf("%s\\ssm_%v_%s", cs.credentialSpecResourceLocation, taskArnSplit[length-1], ssmParam)
+
+	taskId := taskArnSplit[length-1]
+	containerName := cs.credentialSpecContainerMap[originalCredentialspec]
+
+	// We compose a string that is a concatenation of the task_id, container name and the ARN of the credential spec
+	// SSM parameter. This concatenated string is hashed using the SHA-256 hashing scheme to generate a fixed length
+	// checksum string of 64 characters. This helps with resolving collisions within a host or a task using the same SSM
+	// parameter.
+	credSpecFileNameHashFormat := fmt.Sprintf("%s%s%s", taskId, containerName, credentialspecSSMARN)
+	hashFunction := sha256.New()
+	hashFunction.Write([]byte(credSpecFileNameHashFormat))
+	customCredSpecFileName := fmt.Sprintf("%x", hashFunction.Sum(nil))
+
+	localCredSpecFilePath := filepath.Join(cs.credentialSpecResourceLocation, customCredSpecFileName)
 	err = cs.writeSSMFile(ssmParamData, localCredSpecFilePath)
 	if err != nil {
 		cs.setTerminalReason(err.Error())
 		return err
 	}
 
-	dockerHostconfigSecOptCredSpec := fmt.Sprintf("credentialspec=file://%s", filepath.Base(localCredSpecFilePath))
+	err = handleNonFileDomainlessGMSACredSpecImpl(originalCredentialspec, localCredSpecFilePath, cs.taskARN)
+	if err != nil {
+		cs.setTerminalReason(err.Error())
+		return err
+	}
+
+	dockerHostconfigSecOptCredSpec := fmt.Sprintf("credentialspec=file://%s", customCredSpecFileName)
 	cs.updateCredSpecMapping(originalCredentialspec, dockerHostconfigSecOptCredSpec)
 
 	return nil
@@ -504,25 +389,6 @@ func (cs *CredentialSpecResource) writeSSMFile(ssmParamData, filePath string) er
 	return cs.ioutil.WriteFile(filePath, []byte(ssmParamData), filePerm)
 }
 
-func (cs *CredentialSpecResource) getCredSpecMap() map[string]string {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	return cs.CredSpecMap
-}
-
-func (cs *CredentialSpecResource) GetTargetMapping(credSpecInput string) (string, error) {
-	cs.lock.RLock()
-	defer cs.lock.RUnlock()
-
-	targetCredSpecMapping, ok := cs.CredSpecMap[credSpecInput]
-	if !ok {
-		return "", errors.New("unable to obtain credentialspec mapping")
-	}
-
-	return targetCredSpecMapping, nil
-}
-
 func (cs *CredentialSpecResource) updateCredSpecMapping(credSpecInput, targetCredSpec string) {
 	cs.lock.Lock()
 	defer cs.lock.Unlock()
@@ -534,10 +400,14 @@ func (cs *CredentialSpecResource) updateCredSpecMapping(credSpecInput, targetCre
 // Cleanup removes the credentialspec created for the task
 func (cs *CredentialSpecResource) Cleanup() error {
 	cs.clearCredentialSpec()
+	if cs.isDomainlessGMSATask {
+		err := cs.deleteTaskExecutionCredentialsRegKeys()
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
-
-var remove = os.Remove
 
 // clearCredentialSpec cycles through the collection of credentialspec data and
 // removes them from the task
@@ -551,83 +421,46 @@ func (cs *CredentialSpecResource) clearCredentialSpec() {
 			continue
 		}
 		// Split credentialspec to obtain local file-name
-		credSpecSplit := strings.SplitAfterN(value, "credentialspec=file://", 2)
+		credSpecSplit := strings.SplitAfterN(value, "file://", 2)
 		if len(credSpecSplit) != 2 {
 			seelog.Warnf("Unable to parse target credentialspec: %s", value)
 			continue
 		}
 		localCredentialSpecFile := credSpecSplit[1]
 		localCredentialSpecFilePath := filepath.Join(cs.credentialSpecResourceLocation, localCredentialSpecFile)
-		err := remove(localCredentialSpecFilePath)
+		err := osRemoveImpl(localCredentialSpecFilePath)
 		if err != nil {
 			seelog.Warnf("Unable to clear local credential spec file %s for task %s", localCredentialSpecFile, cs.taskARN)
 		}
+
 		delete(cs.CredSpecMap, key)
 	}
 }
 
-// CredentialSpecResourceJSON is the json representation of the credentialspec resource
-type CredentialSpecResourceJSON struct {
-	TaskARN                 string                `json:"taskARN"`
-	CreatedAt               *time.Time            `json:"createdAt,omitempty"`
-	DesiredStatus           *CredentialSpecStatus `json:"desiredStatus"`
-	KnownStatus             *CredentialSpecStatus `json:"knownStatus"`
-	RequiredCredentialSpecs []string              `json:"credentialSpecResources"`
-	CredSpecMap             map[string]string     `json:"CredSpecMap"`
-	ExecutionCredentialsID  string                `json:"executionCredentialsID"`
+func (cs *CredentialSpecResource) deleteTaskExecutionCredentialsRegKeys() error {
+	cs.lock.Lock()
+	defer cs.lock.Unlock()
+
+	return deleteTaskExecutionCredentialsRegKeysImpl(cs.taskARN)
 }
 
-// MarshalJSON serialises the CredentialSpecResourceJSON struct to JSON
-func (cs *CredentialSpecResource) MarshalJSON() ([]byte, error) {
-	if cs == nil {
-		return nil, errors.New("credential specresource is nil")
+// deleteTaskExecutionCredentialsRegKeys deletes the taskExecutionRole IAM credentials in the task registry key
+// after the task has been terminated.
+func deleteTaskExecutionCredentialsRegKeys(taskARN string) error {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, ecsCcgPluginRegistryKeyRoot, registry.ALL_ACCESS)
+	if err != nil {
+		// Early exit with success case, if the registry key doesn't exist then there are no task execution role creds to cleanup
+		seelog.Errorf("Error opening %s key: %s", ecsCcgPluginRegistryKeyRoot, err)
+		return nil
 	}
-	createdAt := cs.GetCreatedAt()
-	return json.Marshal(CredentialSpecResourceJSON{
-		TaskARN:   cs.taskARN,
-		CreatedAt: &createdAt,
-		DesiredStatus: func() *CredentialSpecStatus {
-			desiredState := cs.GetDesiredStatus()
-			s := CredentialSpecStatus(desiredState)
-			return &s
-		}(),
-		KnownStatus: func() *CredentialSpecStatus {
-			knownState := cs.GetKnownStatus()
-			s := CredentialSpecStatus(knownState)
-			return &s
-		}(),
-		RequiredCredentialSpecs: cs.getRequiredCredentialSpecs(),
-		CredSpecMap:             cs.getCredSpecMap(),
-		ExecutionCredentialsID:  cs.getExecutionCredentialsID(),
-	})
-}
+	defer k.Close()
 
-// UnmarshalJSON deserialises the raw JSON to a CredentialSpecResourceJSON struct
-func (cs *CredentialSpecResource) UnmarshalJSON(b []byte) error {
-	temp := CredentialSpecResourceJSON{}
-
-	if err := json.Unmarshal(b, &temp); err != nil {
+	err = registry.DeleteKey(k, taskARN)
+	if err != nil {
+		seelog.Errorf("Error deleting %s key: %s", ecsCcgPluginRegistryKeyRoot+"\\"+taskARN, err)
 		return err
 	}
-
-	if temp.DesiredStatus != nil {
-		cs.SetDesiredStatus(resourcestatus.ResourceStatus(*temp.DesiredStatus))
-	}
-	if temp.KnownStatus != nil {
-		cs.SetKnownStatus(resourcestatus.ResourceStatus(*temp.KnownStatus))
-	}
-	if temp.CreatedAt != nil && !temp.CreatedAt.IsZero() {
-		cs.SetCreatedAt(*temp.CreatedAt)
-	}
-	if temp.RequiredCredentialSpecs != nil {
-		cs.requiredCredentialSpecs = temp.RequiredCredentialSpecs
-	}
-	if temp.CredSpecMap != nil {
-		cs.CredSpecMap = temp.CredSpecMap
-	}
-	cs.taskARN = temp.TaskARN
-	cs.executionCredentialsID = temp.ExecutionCredentialsID
-
+	seelog.Infof("Deleted Task Execution Credential Registry key for task: %s", taskARN)
 	return nil
 }
 
@@ -647,19 +480,161 @@ func (cs *CredentialSpecResource) setCredentialSpecResourceLocation() error {
 	return nil
 }
 
-// GetAppliedStatus safely returns the currently applied status of the resource
-func (cs *CredentialSpecResource) GetAppliedStatus() resourcestatus.ResourceStatus {
-	return resourcestatus.ResourceStatusNone
+// CredentialSpecResourceJSON is the json representation of the credentialspec resource
+type CredentialSpecResourceJSON struct {
+	*CredentialSpecResourceJSONCommon
 }
 
-func (cs *CredentialSpecResource) DependOnTaskNetwork() bool {
-	return false
+func (cs *CredentialSpecResource) MarshallPlatformSpecificFields(credentialSpecResourceJSON *CredentialSpecResourceJSON) {
+	return
 }
 
-func (cs *CredentialSpecResource) BuildContainerDependency(containerName string, satisfied apicontainerstatus.ContainerStatus,
-	dependent resourcestatus.ResourceStatus) {
+func (cs *CredentialSpecResource) UnmarshallPlatformSpecificFields(credentialSpecResourceJSON CredentialSpecResourceJSON) {
+	return
 }
 
-func (cs *CredentialSpecResource) GetContainerDependencies(dependent resourcestatus.ResourceStatus) []apicontainer.ContainerDependency {
+// setTaskExecutionCredentialsRegKeys stores the taskExecutionRole IAM credentials to the task registry key
+// so that the domainless gMSA plugin may use these credentials to access the customer Active Directory authentication
+// information.
+func SetTaskExecutionCredentialsRegKeys(taskCredentials credentials.IAMRoleCredentials, taskArn string) error {
+	if taskCredentials == (credentials.IAMRoleCredentials{}) {
+		err := errors.New("Unable to find execution role credentials while setting registry key for task " + taskArn)
+		return err
+	}
+
+	taskRegistryKey, _, err := registry.CreateKey(registry.LOCAL_MACHINE, ecsCcgPluginRegistryKeyRoot+"\\"+taskArn, registry.WRITE)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error creating registry key root %s for task %s: %s", ecsCcgPluginRegistryKeyRoot, taskArn, err)
+		seelog.Errorf(errMsg)
+		return errors.Wrapf(err, errMsg)
+	}
+	defer taskRegistryKey.Close()
+
+	err = taskRegistryKey.SetStringValue("AKID", taskCredentials.AccessKeyID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error creating AKID child value for task %s:%s", taskArn, err)
+		seelog.Errorf(errMsg)
+		return errors.Wrapf(err, errMsg)
+	}
+	err = taskRegistryKey.SetStringValue("SKID", taskCredentials.SecretAccessKey)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error creating AKID child value for task %s:%s", taskArn, err)
+		seelog.Errorf(errMsg)
+		return errors.Wrapf(err, errMsg)
+	}
+	err = taskRegistryKey.SetStringValue("SESSIONTOKEN", taskCredentials.SessionToken)
+	if err != nil {
+		errMsg := fmt.Sprintf("Error creating SESSIONTOKEN child value for task %s:%s", taskArn, err)
+		seelog.Errorf(errMsg)
+		return errors.Wrapf(err, errMsg)
+	}
+
+	seelog.Infof("Successfully SetTaskExecutionCredentialsRegKeys for task %s", taskArn)
+	return nil
+}
+
+// handleNonFileDomainlessGMSACredSpec reads and then injects the taskExecutionRoleRegistryKey location for
+// the s3/ssm gMSA credential spec cases.
+func handleNonFileDomainlessGMSACredSpec(originalCredSpec, localCredSpecFilePath, taskARN string) error {
+	// Exit early for non domainless gMSA cred specs
+	if !strings.HasPrefix(originalCredSpec, "credentialspecdomainless:") {
+		return nil
+	}
+
+	err := readWriteDomainlessCredentialSpecImpl(localCredSpecFilePath, localCredSpecFilePath, taskARN)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// readWriteDomainlessCredentialSpec is used to open the credential spec file on local disk, inject the
+// taskExecutionRoleInformation in memory, and then write the file to a specific path. The reason we do not
+// modify the same fail is to avoid modifying the customer resource when the customer provides a local file
+// credential spec
+func readWriteDomainlessCredentialSpec(filePath, outFilePath, taskARN string) error {
+	credSpec, err := readCredentialSpecImpl(filePath)
+	if err != nil {
+		return err
+	}
+	err = writeCredentialSpecImpl(credSpec, outFilePath, taskARN)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// readCredentialSpec is used to open the credential spec file on local disk and read it into a generic
+// bytes map object map[string]interface{}
+func readCredentialSpec(filePath string) (map[string]interface{}, error) {
+	byteResult, err := osReadFileImpl(filePath)
+	if err != nil {
+		return nil, err
+	}
+	var credSpec map[string]interface{}
+	err = json.Unmarshal(byteResult, &credSpec)
+	if err != nil {
+		return nil, err
+	}
+	return credSpec, nil
+}
+
+// writeCredentialSpec is used to selectively decode portions of the Microsoft gMSA generated credential spec file and then
+// inject the taskExecutionRoleRegistryKey location so that the gMSA plugin is able to access these IAM credentials.
+// The reason that the JSON unmarshalling is manual is to protect against future key/value pairs that appear in the JSON,
+// while only modifying the portions that pertain to domainless gMSA. This is in case Microsoft adds additional keys to the
+// JSON credential spec, so that our writer does not ignore this data.
+func writeCredentialSpec(credSpec map[string]interface{}, outFilePath string, taskARN string) error {
+	activeDirectoryConfigUntyped, ok := credSpec["ActiveDirectoryConfig"]
+	if !ok {
+		return errors.New(fmt.Sprintf(credentialSpecParseErrorMsgTemplate, "ActiveDirectoryConfig"))
+	}
+	activeDirectoryConfig, ok := activeDirectoryConfigUntyped.(map[string]interface{})
+	if !ok {
+		return errors.New(fmt.Sprintf(untypedMarshallErrorMsgTemplate, "activeDirectoryConfigUntyped", "map[string]interface{}"))
+	}
+
+	hostAccountConfigUntyped, ok := activeDirectoryConfig["HostAccountConfig"]
+	if !ok {
+		return errors.New(fmt.Sprintf(credentialSpecParseErrorMsgTemplate, "HostAccountConfig"))
+	}
+	hostAccountConfig, ok := hostAccountConfigUntyped.(map[string]interface{})
+	if !ok {
+		return errors.New(fmt.Sprintf(untypedMarshallErrorMsgTemplate, "hostAccountConfigUntyped", "map[string]interface{}"))
+	}
+
+	pluginInputStringUntyped, ok := hostAccountConfig["PluginInput"]
+	if !ok {
+		return errors.New(fmt.Sprintf(credentialSpecParseErrorMsgTemplate, "PluginInput"))
+	}
+	var pluginInputParsed pluginInput
+	pluginInputString, ok := pluginInputStringUntyped.(string)
+	if !ok {
+		return errors.New(fmt.Sprintf(untypedMarshallErrorMsgTemplate, "pluginInputStringUntyped", "string"))
+	}
+	err := json.Unmarshal([]byte(pluginInputString), &pluginInputParsed)
+	if err != nil {
+		return err
+	}
+
+	pluginInputParsed.RegKeyPath = fmt.Sprintf(regKeyPathFormat, taskARN)
+
+	pluginInputBytes, err := json.Marshal(pluginInputParsed)
+	if err != nil {
+		return err
+	}
+
+	hostAccountConfig["PluginInput"] = string(pluginInputBytes)
+
+	jsonBytes, err := json.Marshal(credSpec)
+	if err != nil {
+		return err
+	}
+
+	err = osWriteFileImpl(outFilePath, jsonBytes, filePerm)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }

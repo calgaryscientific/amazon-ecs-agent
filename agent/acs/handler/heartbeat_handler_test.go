@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -16,11 +17,12 @@
 package handler
 
 import (
-	"context"
 	"testing"
 
-	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
-	mock_wsclient "github.com/aws/amazon-ecs-agent/agent/wsclient/mock"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/doctor"
+	mock_wsclient "github.com/aws/amazon-ecs-agent/ecs-agent/wsclient/mock"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -83,22 +85,21 @@ func validateHeartbeatAck(t *testing.T, heartbeatReceived *ecsacs.HeartbeatMessa
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	var heartbeatAckSent *ecsacs.HeartbeatAckRequest
+	ackSent := make(chan *ecsacs.HeartbeatAckRequest)
 
 	mockWsClient := mock_wsclient.NewMockClientServer(ctrl)
 	mockWsClient.EXPECT().MakeRequest(gomock.Any()).Do(func(message *ecsacs.HeartbeatAckRequest) {
-		heartbeatAckSent = message
-		cancel()
+		ackSent <- message
+		close(ackSent)
 	}).Times(1)
 
-	handler := newHeartbeatHandler(ctx, mockWsClient)
-	go handler.sendHeartbeatAck()
+	emptyHealthchecksList := []doctor.Healthcheck{}
+	emptyDoctor, _ := doctor.NewDoctor(emptyHealthchecksList, "testCluster", "this:is:an:instance:arn")
 
-	handler.handleSingleHeartbeatMessage(heartbeatReceived)
+	handleSingleHeartbeatMessage(mockWsClient, emptyDoctor, heartbeatReceived)
 
-	// wait till we get an ack from heartbeatAckMessageBuffer
-	<-ctx.Done()
+	// wait till we send an
+	heartbeatAckSent := <-ackSent
 
 	require.Equal(t, heartbeatAckExpected, heartbeatAckSent)
 }

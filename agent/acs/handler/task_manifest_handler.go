@@ -15,14 +15,14 @@ package handler
 import (
 	"context"
 	"strconv"
-	"sync"
 
-	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
 	"github.com/aws/amazon-ecs-agent/agent/data"
 	"github.com/aws/amazon-ecs-agent/agent/engine"
-	"github.com/aws/amazon-ecs-agent/agent/wsclient"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
+	acssession "github.com/aws/amazon-ecs-agent/ecs-agent/acs/session"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/wsclient"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/cihub/seelog"
 )
@@ -41,14 +41,14 @@ type taskManifestHandler struct {
 	containerInstanceArn                     string
 	acsClient                                wsclient.ClientServer
 	latestSeqNumberTaskManifest              *int64
-	messageId                                string
-	lock                                     sync.RWMutex
+	manifestMessageIDAccessor                acssession.ManifestMessageIDAccessor
 }
 
 // newTaskManifestHandler returns an instance of the taskManifestHandler struct
 func newTaskManifestHandler(ctx context.Context,
 	cluster string, containerInstanceArn string, acsClient wsclient.ClientServer,
-	dataClient data.Client, taskEngine engine.TaskEngine, latestSeqNumberTaskManifest *int64) taskManifestHandler {
+	dataClient data.Client, taskEngine engine.TaskEngine, latestSeqNumberTaskManifest *int64,
+	manifestMessageIDAccessor acssession.ManifestMessageIDAccessor) taskManifestHandler {
 
 	// Create a cancelable context from the parent context
 	derivedContext, cancel := context.WithCancel(ctx)
@@ -65,6 +65,7 @@ func newTaskManifestHandler(ctx context.Context,
 		taskEngine:                               taskEngine,
 		dataClient:                               dataClient,
 		latestSeqNumberTaskManifest:              latestSeqNumberTaskManifest,
+		manifestMessageIDAccessor:                manifestMessageIDAccessor,
 	}
 }
 
@@ -93,24 +94,24 @@ func (taskManifestHandler *taskManifestHandler) start() {
 
 }
 
-func (taskManifestHandler *taskManifestHandler) getMessageId() string {
-	taskManifestHandler.lock.RLock()
-	defer taskManifestHandler.lock.RUnlock()
-	return taskManifestHandler.messageId
-}
-
-func (taskManifestHandler *taskManifestHandler) setMessageId(messageId string) {
-	taskManifestHandler.lock.Lock()
-	defer taskManifestHandler.lock.Unlock()
-	taskManifestHandler.messageId = messageId
-}
-
 func (taskManifestHandler *taskManifestHandler) sendTaskManifestMessageAck() {
 	for {
 		select {
 		case messageBufferTaskManifestAck := <-taskManifestHandler.messageBufferTaskManifestAck:
 			taskManifestHandler.ackTaskManifestMessage(messageBufferTaskManifestAck)
 		case <-taskManifestHandler.ctx.Done():
+			return
+		}
+	}
+}
+
+// sendPendingTaskManifestMessageAck sends all pending task manifest acks to ACS before closing the connection
+func (taskManifestHandler *taskManifestHandler) sendPendingTaskManifestMessageAck() {
+	for {
+		select {
+		case messageBufferTaskManifestAck := <-taskManifestHandler.messageBufferTaskManifestAck:
+			taskManifestHandler.ackTaskManifestMessage(messageBufferTaskManifestAck)
+		default:
 			return
 		}
 	}
@@ -125,6 +126,21 @@ func (taskManifestHandler *taskManifestHandler) handleTaskStopVerificationAck() 
 					messageBufferTaskStopVerificationAck.MessageId, err)
 			}
 		case <-taskManifestHandler.ctx.Done():
+			return
+		}
+	}
+}
+
+// handlePendingTaskStopVerificationAck sends pending task stop verification acks to ACS before closing the connection
+func (taskManifestHandler *taskManifestHandler) handlePendingTaskStopVerificationAck() {
+	for {
+		select {
+		case messageBufferTaskStopVerificationAck := <-taskManifestHandler.messageBufferTaskStopVerificationAck:
+			if err := taskManifestHandler.handleSingleMessageVerificationAck(messageBufferTaskStopVerificationAck); err != nil {
+				seelog.Warnf("Error handling Verification ack with messageID: %s, error: %v",
+					messageBufferTaskStopVerificationAck.MessageId, err)
+			}
+		default:
 			return
 		}
 	}
@@ -216,10 +232,10 @@ func compareTasks(receivedTaskList []*ecsacs.TaskIdentifier, runningTaskList []*
 func (taskManifestHandler *taskManifestHandler) handleSingleMessageVerificationAck(
 	message *ecsacs.TaskStopVerificationAck) error {
 	// Ensure that we have received a corresponding task manifest message before
-	taskManifestMessageId := taskManifestHandler.getMessageId()
+	taskManifestMessageId := taskManifestHandler.manifestMessageIDAccessor.GetMessageID()
 	if taskManifestMessageId != "" && *message.MessageId == taskManifestMessageId {
 		// Reset the message id so that the message with same message id is not processed twice
-		taskManifestHandler.setMessageId("")
+		taskManifestHandler.manifestMessageIDAccessor.SetMessageID("")
 		for _, taskToKill := range message.StopTasks {
 			if *taskToKill.DesiredStatus == apitaskstatus.TaskStoppedString {
 				task, isPresent := taskManifestHandler.taskEngine.GetTaskByArn(*taskToKill.TaskArn)
@@ -259,7 +275,7 @@ func (taskManifestHandler *taskManifestHandler) handleTaskManifestSingleMessage(
 		tasksToKill := compareTasks(taskListManifestHandler, runningTasksOnInstance, clusterARN)
 
 		// Update messageId so that it can be compared to the messageId in TaskStopVerificationAck message
-		taskManifestHandler.setMessageId(*message.MessageId)
+		taskManifestHandler.manifestMessageIDAccessor.SetMessageID(*message.MessageId)
 
 		// Throw the task manifest ack and task verification message in async so that it does not block the current
 		// thread.

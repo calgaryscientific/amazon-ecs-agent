@@ -23,10 +23,11 @@ import (
 	"strings"
 	"time"
 
-	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
 	"github.com/aws/amazon-ecs-agent/agent/ec2"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
+	apierrors "github.com/aws/amazon-ecs-agent/ecs-agent/api/errors"
+	commonutils "github.com/aws/amazon-ecs-agent/ecs-agent/utils"
 	"github.com/cihub/seelog"
 )
 
@@ -43,9 +44,6 @@ const (
 
 	// AgentIntrospectionPort is used to serve the metadata about the agent and to query the tasks being managed by the agent.
 	AgentIntrospectionPort = 51678
-
-	// AgentCredentialsPort is used to serve the credentials for tasks.
-	AgentCredentialsPort = 51679
 
 	// AgentPrometheusExpositionPort is used to expose Prometheus metrics that can be scraped by a Prometheus server
 	AgentPrometheusExpositionPort = 51680
@@ -92,7 +90,7 @@ const (
 
 	// minimumTaskCleanupWaitDuration specifies the minimum duration to wait before cleaning up
 	// a task's container. This is used to enforce sane values for the config.TaskCleanupWaitDuration field.
-	minimumTaskCleanupWaitDuration = 1 * time.Minute
+	minimumTaskCleanupWaitDuration = time.Second
 
 	// minimumImagePullInactivityTimeout specifies the minimum amount of time for that an image can be
 	// 'stuck' in the pull / unpack step. Very small values are unsafe and lead to high failure rate.
@@ -187,6 +185,9 @@ var (
 	// DefaultPauseContainerTag is the tag for the pause container image. The linker's load
 	// flags are used to populate this value from the Makefile
 	DefaultPauseContainerTag = ""
+
+	// CgroupV2 Specifies whether or not to run in Cgroups V2 mode.
+	CgroupV2 = false
 )
 
 // Merge merges two config files, preferring the ones on the left. Any nil or
@@ -204,7 +205,7 @@ func (cfg *Config) Merge(rhs Config) *Config {
 				leftField.Set(reflect.ValueOf(right.Field(i).Interface()))
 			}
 		default:
-			if utils.ZeroOrNil(leftField.Interface()) {
+			if commonutils.ZeroOrNil(leftField.Interface()) {
 				leftField.Set(reflect.ValueOf(right.Field(i).Interface()))
 			}
 		}
@@ -395,7 +396,7 @@ func (cfg *Config) checkMissingAndDepreciated() error {
 	fatalFields := []string{}
 	for i := 0; i < cfgElem.NumField(); i++ {
 		cfgField := cfgElem.Field(i)
-		if utils.ZeroOrNil(cfgField.Interface()) {
+		if commonutils.ZeroOrNil(cfgField.Interface()) {
 			missingTag := cfgStructField.Field(i).Tag.Get("missing")
 			if len(missingTag) == 0 {
 				continue
@@ -429,7 +430,7 @@ func (cfg *Config) complete() bool {
 	cfgElem := reflect.ValueOf(cfg).Elem()
 
 	for i := 0; i < cfgElem.NumField(); i++ {
-		if utils.ZeroOrNil(cfgElem.Field(i).Interface()) {
+		if commonutils.ZeroOrNil(cfgElem.Field(i).Interface()) {
 			return false
 		}
 	}
@@ -464,7 +465,7 @@ func fileConfig() (Config, error) {
 	}
 
 	// Handle any deprecated keys correctly here
-	if utils.ZeroOrNil(cfg.Cluster) && !utils.ZeroOrNil(cfg.ClusterArn) {
+	if commonutils.ZeroOrNil(cfg.Cluster) && !commonutils.ZeroOrNil(cfg.ClusterArn) {
 		cfg.Cluster = cfg.ClusterArn
 	}
 	return cfg, nil
@@ -542,6 +543,7 @@ func environmentConfig() (Config, error) {
 		SELinuxCapable:                      parseBooleanDefaultFalseConfig("ECS_SELINUX_CAPABLE"),
 		AppArmorCapable:                     parseBooleanDefaultFalseConfig("ECS_APPARMOR_CAPABLE"),
 		TaskCleanupWaitDuration:             parseEnvVariableDuration("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION"),
+		TaskCleanupWaitDurationJitter:       parseEnvVariableDuration("ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION_JITTER"),
 		TaskENIEnabled:                      parseBooleanDefaultFalseConfig("ECS_ENABLE_TASK_ENI"),
 		TaskIAMRoleEnabled:                  parseBooleanDefaultFalseConfig("ECS_ENABLE_TASK_IAM_ROLE"),
 		DeleteNonECSImagesEnabled:           parseBooleanDefaultFalseConfig("ECS_ENABLE_UNTRACKED_IMAGE_CLEANUP"),
@@ -586,9 +588,14 @@ func environmentConfig() (Config, error) {
 		CgroupCPUPeriod:                     parseCgroupCPUPeriod(),
 		SpotInstanceDrainingEnabled:         parseBooleanDefaultFalseConfig("ECS_ENABLE_SPOT_INSTANCE_DRAINING"),
 		GMSACapable:                         parseGMSACapability(),
+		GMSADomainlessCapable:               parseGMSADomainlessCapability(),
 		VolumePluginCapabilities:            parseVolumePluginCapabilities(),
 		FSxWindowsFileServerCapable:         parseFSxWindowsFileServerCapability(),
 		External:                            parseBooleanDefaultFalseConfig("ECS_EXTERNAL"),
+		EnableRuntimeStats:                  parseBooleanDefaultFalseConfig("ECS_ENABLE_RUNTIME_STATS"),
+		ShouldExcludeIPv6PortBinding:        parseBooleanDefaultTrueConfig("ECS_EXCLUDE_IPV6_PORTBINDING"),
+		WarmPoolsSupport:                    parseBooleanDefaultFalseConfig("ECS_WARM_POOLS_CHECK"),
+		DynamicHostPortRange:                parseDynamicHostPortRange("ECS_DYNAMIC_HOST_PORT_RANGE"),
 	}, err
 }
 
@@ -621,6 +628,8 @@ func (cfg *Config) String() string {
 			"ContainerCreateTimeout: %v, "+
 			"DependentContainersPullUpfront: %v, "+
 			"TaskCPUMemLimit: %v, "+
+			"ShouldExcludeIPv6PortBinding: %v, "+
+			"DynamicHostPortRange: %v"+
 			"%s",
 		cfg.Cluster,
 		cfg.AWSRegion,
@@ -638,6 +647,8 @@ func (cfg *Config) String() string {
 		cfg.ContainerCreateTimeout,
 		cfg.DependentContainersPullUpfront,
 		cfg.TaskCPUMemLimit,
+		cfg.ShouldExcludeIPv6PortBinding,
+		cfg.DynamicHostPortRange,
 		cfg.platformString(),
 	)
 }

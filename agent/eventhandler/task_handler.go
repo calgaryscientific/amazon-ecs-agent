@@ -29,7 +29,8 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/metrics"
 	"github.com/aws/amazon-ecs-agent/agent/statechange"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
-	"github.com/aws/amazon-ecs-agent/agent/utils/retry"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/retry"
 	"github.com/cihub/seelog"
 )
 
@@ -183,9 +184,8 @@ func (handler *TaskHandler) startDrainEventsTicker() {
 			// the tasksToContainerStates and tasksToManagedAgentStates maps based on the
 			// task arns of containers and managed agents that haven't been sent to ECS yet.
 			for _, taskEvent := range handler.taskStateChangesToSend() {
-				seelog.Infof(
-					"TaskHandler: Adding a state change event to send batched container/managed agent events: %s",
-					taskEvent.String())
+				logger.Debug("TaskHandler: Adding a state change event to send batched container/managed agent events",
+					taskEvent.ToFields())
 				// Force start the the task state change submission
 				// workflow by calling AddStateChangeEvent method.
 				handler.AddStateChangeEvent(taskEvent, handler.client)
@@ -261,13 +261,13 @@ func (handler *TaskHandler) taskStateChangesToSend() []api.TaskStateChange {
 
 // batchContainerEventUnsafe collects container state change events for a given task arn
 func (handler *TaskHandler) batchContainerEventUnsafe(event api.ContainerStateChange) {
-	seelog.Infof("TaskHandler: batching container event: %s", event.String())
+	seelog.Debugf("TaskHandler: batching container event: %s", event.String())
 	handler.tasksToContainerStates[event.TaskArn] = append(handler.tasksToContainerStates[event.TaskArn], event)
 }
 
 // batchManagedAgentEventUnsafe collects managed agent state change events for a given task arn
 func (handler *TaskHandler) batchManagedAgentEventUnsafe(event api.ManagedAgentStateChange) {
-	seelog.Infof("TaskHandler: batching managed agent event: %s", event.String())
+	seelog.Debugf("TaskHandler: batching managed agent event: %s", event.String())
 	handler.tasksToManagedAgentStates[event.TaskArn] = append(handler.tasksToManagedAgentStates[event.TaskArn], event)
 }
 
@@ -310,8 +310,7 @@ func (handler *TaskHandler) getTaskEventsUnsafe(event *sendableEvent) *taskSenda
 			taskARN:   taskARN,
 		}
 		handler.tasksToEvents[taskARN] = taskEvents
-		seelog.Debugf("TaskHandler: collecting events for new task; event: %s; events: %s ",
-			event.toString(), taskEvents.toStringUnsafe())
+		logger.Debug(fmt.Sprintf("TaskHandler: collecting events for new task; events: %s", taskEvents.toStringUnsafe()), event.toFields())
 	}
 
 	return taskEvents
@@ -366,7 +365,7 @@ func (taskEvents *taskSendableEvents) sendChange(change *sendableEvent,
 	defer taskEvents.lock.Unlock()
 
 	// Add event to the queue
-	seelog.Infof("TaskHandler: Adding event: %s", change.toString())
+	logger.Debug("TaskHandler: Adding event", change.toFields())
 	taskEvents.events.PushBack(change)
 
 	if !taskEvents.sending {
@@ -375,9 +374,9 @@ func (taskEvents *taskSendableEvents) sendChange(change *sendableEvent,
 		taskEvents.sending = true
 		go handler.submitTaskEvents(taskEvents, client, change.taskArn())
 	} else {
-		seelog.Debugf(
-			"TaskHandler: Not submitting change as the task is already being sent: %s",
-			change.toString())
+		logger.Debug(
+			"TaskHandler: Not submitting change as the task is already being sent",
+			change.toFields())
 	}
 }
 
@@ -422,12 +421,12 @@ func (taskEvents *taskSendableEvents) submitFirstEvent(handler *TaskHandler, bac
 		}
 	} else {
 		// Shouldn't be sent as either a task or container change event; must have been already sent
-		seelog.Infof("TaskHandler: Not submitting redundant event; just removing: %s", event.toString())
+		logger.Info("TaskHandler: Not submitting redundant event; just removing", event.toFields())
 		taskEvents.events.Remove(eventToSubmit)
 	}
 
 	if taskEvents.events.Len() == 0 {
-		seelog.Debug("TaskHandler: Removed the last element, no longer sending")
+		logger.Debug("TaskHandler: Removed the last element, no longer sending")
 		taskEvents.sending = false
 		return true, nil
 	}
@@ -445,7 +444,7 @@ func (taskEvents *taskSendableEvents) toStringUnsafe() string {
 func handleInvalidParamException(err error, events *list.List, eventToSubmit *list.Element) {
 	if utils.IsAWSErrorCodeEqual(err, ecs.ErrCodeInvalidParameterException) {
 		event := eventToSubmit.Value.(*sendableEvent)
-		seelog.Warnf("TaskHandler: Event is sent with invalid parameters; just removing: %s", event.toString())
+		logger.Warn("TaskHandler: Event is sent with invalid parameters; just removing", event.toFields())
 		events.Remove(eventToSubmit)
 	}
 }

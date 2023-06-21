@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -18,25 +19,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
-	"os"
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
-	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
 	"github.com/aws/amazon-ecs-agent/agent/api"
-	"github.com/aws/amazon-ecs-agent/agent/api/eni"
 	mock_api "github.com/aws/amazon-ecs-agent/agent/api/mocks"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
 	apitaskstatus "github.com/aws/amazon-ecs-agent/agent/api/task/status"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/data"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
 	mock_engine "github.com/aws/amazon-ecs-agent/agent/engine/mocks"
 	"github.com/aws/amazon-ecs-agent/agent/eventhandler"
 	"github.com/aws/amazon-ecs-agent/agent/taskresource"
-	mock_wsclient "github.com/aws/amazon-ecs-agent/agent/wsclient/mock"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/eni"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	mock_wsclient "github.com/aws/amazon-ecs-agent/ecs-agent/wsclient/mock"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/golang/mock/gomock"
@@ -149,8 +149,7 @@ func TestHandlePayloadMessageSaveData(t *testing.T) {
 			}).Times(1)
 			tester.mockTaskEngine.EXPECT().AddTask(gomock.Any()).Times(1)
 
-			dataClient, cleanup := newTestDataClient(t)
-			defer cleanup()
+			dataClient := newTestDataClient(t)
 			tester.payloadHandler.dataClient = dataClient
 
 			go tester.payloadHandler.start()
@@ -189,8 +188,7 @@ func TestHandlePayloadMessageSaveDataError(t *testing.T) {
 	tester := setup(t)
 	defer tester.ctrl.Finish()
 
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	// Save added task in the addedTask variable
 	var addedTask *apitask.Task
@@ -217,22 +215,23 @@ func TestHandlePayloadMessageSaveDataError(t *testing.T) {
 		Arn:                 "t1",
 		DesiredStatusUnsafe: apitaskstatus.TaskRunning,
 		ResourcesMapUnsafe:  make(map[string][]taskresource.TaskResource),
+		NetworkMode:         apitask.BridgeNetworkMode,
 	}
 
-	assert.Equal(t, addedTask, expectedTask, "added task is not expected")
+	assert.Equal(t, expectedTask, addedTask, "added task is not expected")
 }
 
-func newTestDataClient(t *testing.T) (data.Client, func()) {
-	testDir, err := ioutil.TempDir("", "agent_acs_handler_unit_test")
-	require.NoError(t, err)
+func newTestDataClient(t *testing.T) data.Client {
+	testDir := t.TempDir()
 
 	testClient, err := data.NewWithSetup(testDir)
+	require.NoError(t, err)
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		require.NoError(t, testClient.Close())
-		require.NoError(t, os.RemoveAll(testDir))
-	}
-	return testClient, cleanup
+	})
+
+	return testClient
 }
 
 // TestHandlePayloadMessageAckedWhenTaskAdded tests if the handler generates an ack
@@ -277,8 +276,9 @@ func TestHandlePayloadMessageAckedWhenTaskAdded(t *testing.T) {
 	expectedTask := &apitask.Task{
 		Arn:                "t1",
 		ResourcesMapUnsafe: make(map[string][]taskresource.TaskResource),
+		NetworkMode:        apitask.BridgeNetworkMode,
 	}
-	assert.Equal(t, addedTask, expectedTask, "received task is not expected")
+	assert.Equal(t, expectedTask, addedTask, "received task is not expected")
 }
 
 // TestHandlePayloadMessageCredentialsAckedWhenTaskAdded tests if the handler generates
@@ -454,8 +454,9 @@ func TestPayloadBufferHandler(t *testing.T) {
 	expectedTask := &apitask.Task{
 		Arn:                taskArn,
 		ResourcesMapUnsafe: make(map[string][]taskresource.TaskResource),
+		NetworkMode:        apitask.BridgeNetworkMode,
 	}
-	assert.Equal(t, addedTask, expectedTask, "received task is not expected")
+	assert.Equal(t, expectedTask, addedTask, "received task is not expected")
 }
 
 // TestPayloadBufferHandlerWithCredentials tests if the async payloadBufferHandler routine
@@ -686,6 +687,7 @@ func validateTaskAndCredentials(taskCredentialsAck, expectedCredentialsAckForTas
 	expectedTask := &apitask.Task{
 		Arn:                expectedTaskArn,
 		ResourcesMapUnsafe: make(map[string][]taskresource.TaskResource),
+		NetworkMode:        apitask.BridgeNetworkMode,
 	}
 	expectedTask.SetCredentialsID(expectedTaskCredentials.CredentialsID)
 
@@ -1029,4 +1031,36 @@ func TestPayloadHandlerAddedFirelensData(t *testing.T) {
 	assert.Equal(t, aws.StringValue(expected.Type), actual.Type)
 	assert.NotNil(t, actual.Options)
 	assert.Equal(t, aws.StringValue(expected.Options["enable-ecs-log-metadata"]), actual.Options["enable-ecs-log-metadata"])
+}
+
+func TestPayloadHandlerSendPendingAcks(t *testing.T) {
+	tester := setup(t)
+	defer tester.ctrl.Finish()
+
+	tester.mockWsClient.EXPECT().MakeRequest(gomock.Any()).Return(nil).Times(1)
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	// write a dummy ack into the ackRequest
+	go func() {
+		tester.payloadHandler.ackRequest <- "testMessageID"
+		wg.Done()
+	}()
+
+	// sleep here to ensure that the sending go routine above executes before the receiving one below. if not, then the
+	// receiving go routine will finish without receiving the ack msg since sendPendingAcks() is non-blocking.
+	time.Sleep(1 * time.Second)
+
+	go func() {
+		tester.payloadHandler.sendPendingAcks()
+		wg.Done()
+	}()
+
+	// wait for both go routines above to finish before we verify that ack channel is empty and exit the test.
+	// this also ensures that the mock MakeRequest call happened as expected.
+	wg.Wait()
+
+	// verify that the ackRequest channel is empty
+	assert.Equal(t, 0, len(tester.payloadHandler.ackRequest))
 }

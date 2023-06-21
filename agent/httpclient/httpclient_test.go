@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -22,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/amazon-ecs-agent/agent/utils/cipher"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/cipher"
 	"github.com/stretchr/testify/assert"
 )
 

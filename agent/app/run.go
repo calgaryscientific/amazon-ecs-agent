@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/aws/amazon-ecs-agent/agent/app/args"
-	"github.com/aws/amazon-ecs-agent/agent/logger"
 	"github.com/aws/amazon-ecs-agent/agent/sighandlers/exitcodes"
 	"github.com/aws/amazon-ecs-agent/agent/version"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
 	"github.com/aws/aws-sdk-go/aws"
 	log "github.com/cihub/seelog"
 )
@@ -71,6 +71,10 @@ func Run(arguments []string) int {
 		// Failure to initialize either the docker client or the EC2 metadata
 		// service client are non terminal errors as they could be transient
 		return exitcodes.ExitError
+	}
+
+	if agent.getConfig().EnableRuntimeStats.Enabled() {
+		defer logger.StartRuntimeStatsLogger(agent.getConfig().RuntimeStatsLogFile)()
 	}
 
 	switch {

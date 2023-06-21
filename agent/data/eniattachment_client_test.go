@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -18,7 +19,8 @@ package data
 import (
 	"testing"
 
-	"github.com/aws/amazon-ecs-agent/agent/api/eni"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/attachmentinfo"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/eni"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -29,12 +31,13 @@ const (
 )
 
 func TestManageENIAttachments(t *testing.T) {
-	testClient, cleanup := newTestClient(t)
-	defer cleanup()
+	testClient := newTestClient(t)
 
 	testEniAttachment := &eni.ENIAttachment{
-		AttachmentARN:    testAttachmentArn,
-		AttachStatusSent: false,
+		AttachmentInfo: attachmentinfo.AttachmentInfo{
+			AttachmentARN:    testAttachmentArn,
+			AttachStatusSent: false,
+		},
 	}
 
 	assert.NoError(t, testClient.SaveENIAttachment(testEniAttachment))
@@ -47,8 +50,10 @@ func TestManageENIAttachments(t *testing.T) {
 	assert.Equal(t, testAttachmentArn, res[0].AttachmentARN)
 
 	testEniAttachment2 := &eni.ENIAttachment{
-		AttachmentARN:    testAttachmentArn2,
-		AttachStatusSent: true,
+		AttachmentInfo: attachmentinfo.AttachmentInfo{
+			AttachmentARN:    testAttachmentArn2,
+			AttachStatusSent: true,
+		},
 	}
 
 	assert.NoError(t, testClient.SaveENIAttachment(testEniAttachment2))
@@ -64,12 +69,13 @@ func TestManageENIAttachments(t *testing.T) {
 }
 
 func TestSaveENIAttachmentInvalidID(t *testing.T) {
-	testClient, cleanup := newTestClient(t)
-	defer cleanup()
+	testClient := newTestClient(t)
 
 	testEniAttachment := &eni.ENIAttachment{
-		AttachmentARN:    "invalid-arn",
-		AttachStatusSent: false,
+		AttachmentInfo: attachmentinfo.AttachmentInfo{
+			AttachmentARN:    "invalid-arn",
+			AttachStatusSent: false,
+		},
 	}
 
 	assert.Error(t, testClient.SaveENIAttachment(testEniAttachment))

@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -19,9 +20,10 @@ import (
 	"testing"
 	"time"
 
-	apieni "github.com/aws/amazon-ecs-agent/agent/api/eni"
 	"github.com/aws/amazon-ecs-agent/agent/data"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/api/attachmentinfo"
+	apieni "github.com/aws/amazon-ecs-agent/ecs-agent/api/eni"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 )
@@ -45,11 +47,25 @@ func testENIAckTimeout(t *testing.T, attachmentType string) {
 	defer ctrl.Finish()
 
 	taskEngineState := dockerstate.NewTaskEngineState()
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	expiresAt := time.Now().Add(time.Millisecond * waitTimeoutMillis)
-	err := addENIAttachmentToState(attachmentType, attachmentArn, taskArn, randomMAC, expiresAt, taskEngineState, dataClient)
+	eniAttachment := &apieni.ENIAttachment{
+		AttachmentInfo: attachmentinfo.AttachmentInfo{
+			TaskARN:          taskArn,
+			AttachmentARN:    attachmentArn,
+			ExpiresAt:        expiresAt,
+			AttachStatusSent: false,
+		},
+		AttachmentType: attachmentType,
+		MACAddress:     randomMAC,
+	}
+	eniHandler := &eniHandler{
+		state:      taskEngineState,
+		dataClient: dataClient,
+	}
+
+	err := eniHandler.addENIAttachmentToState(eniAttachment)
 	assert.NoError(t, err)
 	assert.Len(t, taskEngineState.(*dockerstate.DockerTaskEngineState).AllENIAttachments(), 1)
 	res, err := dataClient.GetENIAttachments()
@@ -83,7 +99,22 @@ func testENIAckWithinTimeout(t *testing.T, attachmentType string) {
 	taskEngineState := dockerstate.NewTaskEngineState()
 	dataClient := data.NewNoopClient()
 	expiresAt := time.Now().Add(time.Millisecond * waitTimeoutMillis)
-	err := addENIAttachmentToState(attachmentType, attachmentArn, taskArn, randomMAC, expiresAt, taskEngineState, dataClient)
+	eniAttachment := &apieni.ENIAttachment{
+		AttachmentInfo: attachmentinfo.AttachmentInfo{
+			TaskARN:          taskArn,
+			AttachmentARN:    attachmentArn,
+			ExpiresAt:        expiresAt,
+			AttachStatusSent: false,
+		},
+		AttachmentType: attachmentType,
+		MACAddress:     randomMAC,
+	}
+	eniHandler := &eniHandler{
+		state:      taskEngineState,
+		dataClient: dataClient,
+	}
+
+	err := eniHandler.addENIAttachmentToState(eniAttachment)
 	assert.NoError(t, err)
 	assert.Len(t, taskEngineState.(*dockerstate.DockerTaskEngineState).AllENIAttachments(), 1)
 	eniAttachment, ok := taskEngineState.(*dockerstate.DockerTaskEngineState).ENIByMac(randomMAC)
@@ -109,12 +140,26 @@ func testHandleENIAttachment(t *testing.T, attachmentType, taskArn string) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	dataClient, cleanup := newTestDataClient(t)
-	defer cleanup()
+	dataClient := newTestDataClient(t)
 
 	taskEngineState := dockerstate.NewTaskEngineState()
 	expiresAt := time.Now().Add(time.Millisecond * waitTimeoutMillis)
-	err := handleENIAttachment(attachmentType, attachmentArn, taskArn, randomMAC, expiresAt, taskEngineState, dataClient)
+	eniAttachment := &apieni.ENIAttachment{
+		AttachmentInfo: attachmentinfo.AttachmentInfo{
+			TaskARN:          taskArn,
+			AttachmentARN:    attachmentArn,
+			ExpiresAt:        expiresAt,
+			AttachStatusSent: false,
+		},
+		AttachmentType: attachmentType,
+		MACAddress:     randomMAC,
+	}
+	eniHandler := &eniHandler{
+		state:      taskEngineState,
+		dataClient: dataClient,
+	}
+
+	err := eniHandler.HandleENIAttachment(eniAttachment)
 	assert.NoError(t, err)
 	assert.Len(t, taskEngineState.(*dockerstate.DockerTaskEngineState).AllENIAttachments(), 1)
 	eniAttachment, ok := taskEngineState.(*dockerstate.DockerTaskEngineState).ENIByMac(randomMAC)

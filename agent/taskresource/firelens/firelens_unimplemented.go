@@ -1,3 +1,4 @@
+//go:build !linux
 // +build !linux
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -22,9 +23,9 @@ import (
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
 	"github.com/aws/amazon-ecs-agent/agent/api/task/status"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/taskresource"
 	resourcestatus "github.com/aws/amazon-ecs-agent/agent/taskresource/status"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
 )
 
 const (

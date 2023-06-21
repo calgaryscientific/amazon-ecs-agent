@@ -19,7 +19,7 @@ import (
 
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
+	apierrors "github.com/aws/amazon-ecs-agent/ecs-agent/api/errors"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/docker/docker/api/types"
 )
@@ -95,6 +95,11 @@ type ListImagesResponse struct {
 	RepoTags []string
 	// Error contains any error returned when listing images
 	Error error
+}
+
+type PingResponse struct {
+	Response *types.Ping
+	Error    error
 }
 
 // VolumeResponse wrapper for CreateVolume and InspectVolume

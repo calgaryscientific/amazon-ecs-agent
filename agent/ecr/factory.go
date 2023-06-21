@@ -20,10 +20,10 @@ import (
 	"time"
 
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/credentials/instancecreds"
 	ecrapi "github.com/aws/amazon-ecs-agent/agent/ecr/model/ecr"
 	"github.com/aws/amazon-ecs-agent/agent/httpclient"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
 	"github.com/aws/aws-sdk-go/aws"
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -75,7 +75,7 @@ func getClientConfig(httpClient *http.Client, authData *apicontainer.ECRAuthData
 			authData.GetPullCredentials().SessionToken)
 		cfg = cfg.WithCredentials(creds)
 	} else {
-		cfg = cfg.WithCredentials(instancecreds.GetCredentials())
+		cfg = cfg.WithCredentials(instancecreds.GetCredentials(false))
 	}
 
 	return cfg, nil

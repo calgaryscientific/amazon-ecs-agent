@@ -25,7 +25,6 @@ import (
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
 	"github.com/aws/amazon-ecs-agent/agent/api/task/status"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/s3"
 	"github.com/aws/amazon-ecs-agent/agent/s3/factory"
 	"github.com/aws/amazon-ecs-agent/agent/taskresource"
@@ -33,7 +32,8 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/utils/bufiowrapper"
 	"github.com/aws/amazon-ecs-agent/agent/utils/ioutilwrapper"
 	"github.com/aws/amazon-ecs-agent/agent/utils/oswrapper"
-	"github.com/aws/amazon-ecs-agent/agent/utils/retry"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/retry"
 
 	"github.com/cihub/seelog"
 	"github.com/pkg/errors"
@@ -202,9 +202,9 @@ func (envfile *EnvironmentFileResource) GetCreatedAt() time.Time {
 	return envfile.createdAtUnsafe
 }
 
-// GetName returns the name fo the resource
+// GetName returns the name of the environment file resource
 func (envfile *EnvironmentFileResource) GetName() string {
-	return ResourceName
+	return ResourceName + "_" + envfile.GetContainerName()
 }
 
 // DesiredTerminal returns true if the resource's desired status is REMOVED
@@ -354,7 +354,7 @@ func (envfile *EnvironmentFileResource) downloadEnvfileFromS3(envFilePath string
 		return
 	}
 
-	s3Client, err := envfile.s3ClientCreator.NewS3ClientForBucket(bucket, envfile.region, iamCredentials)
+	s3Client, err := envfile.s3ClientCreator.NewS3ManagerClient(bucket, envfile.region, iamCredentials)
 	if err != nil {
 		errorEvents <- fmt.Errorf("unable to initialize s3 client for bucket %s, error: %v", bucket, err)
 		return

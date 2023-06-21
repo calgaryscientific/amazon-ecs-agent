@@ -16,9 +16,9 @@ package factory
 import (
 	"time"
 
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/httpclient"
 	ssmclient "github.com/aws/amazon-ecs-agent/agent/ssm"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
 	"github.com/aws/aws-sdk-go/aws"
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -39,7 +39,7 @@ func NewSSMClientCreator() SSMClientCreator {
 
 type ssmClientCreator struct{}
 
-//SSM Client will automatically retry 3 times when has throttling error
+// SSM Client will automatically retry 3 times when has throttling error
 func (*ssmClientCreator) NewSSMClient(region string,
 	creds credentials.IAMRoleCredentials) ssmclient.SSMClient {
 	cfg := aws.NewConfig().

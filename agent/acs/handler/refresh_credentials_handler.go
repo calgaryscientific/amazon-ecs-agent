@@ -13,16 +13,22 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 
-	"context"
-
-	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/engine"
-	"github.com/aws/amazon-ecs-agent/agent/wsclient"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/wsclient"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/cihub/seelog"
+
+	"github.com/pkg/errors"
+)
+
+var (
+	// For ease of unit testing
+	checkAndSetDomainlessGMSATaskExecutionRoleCredentialsImpl = checkAndSetDomainlessGMSATaskExecutionRoleCredentials
 )
 
 // refreshCredentialsHandler represents the refresh credentials operation for the ACS client
@@ -92,6 +98,18 @@ func (refreshHandler *refreshCredentialsHandler) sendAcks() {
 	}
 }
 
+// sendPendingAcks sends pending acks to ACS before closing the connection
+func (refreshHandler *refreshCredentialsHandler) sendPendingAcks() {
+	for {
+		select {
+		case ack := <-refreshHandler.ackRequest:
+			refreshHandler.ackMessage(ack)
+		default:
+			return
+		}
+	}
+}
+
 // ackMessageId sends an IAMRoleCredentialsAckRequest to the backend
 func (refreshHandler *refreshCredentialsHandler) ackMessage(ack *ecsacs.IAMRoleCredentialsAckRequest) {
 	err := refreshHandler.acsClient.MakeRequest(ack)
@@ -133,10 +151,11 @@ func (refreshHandler *refreshCredentialsHandler) handleSingleMessage(message *ec
 	if !validRoleType(roleType) {
 		seelog.Errorf("Unknown RoleType for task in credentials message, roleType: %s arn: %s, messageId: %s", roleType, taskArn, messageId)
 	} else {
+		iamRoleCredentials := credentials.IAMRoleCredentialsFromACS(message.RoleCredentials, roleType)
 		err = refreshHandler.credentialsManager.SetTaskCredentials(
 			&(credentials.TaskIAMRoleCredentials{
 				ARN:                taskArn,
-				IAMRoleCredentials: credentials.IAMRoleCredentialsFromACS(message.RoleCredentials, roleType),
+				IAMRoleCredentials: iamRoleCredentials,
 			}))
 		if err != nil {
 			seelog.Errorf("Unable to update credentials for task, err: %v messageId: %s", err, messageId)
@@ -148,6 +167,12 @@ func (refreshHandler *refreshCredentialsHandler) handleSingleMessage(message *ec
 		}
 		if roleType == credentials.ExecutionRoleType {
 			task.SetExecutionRoleCredentialsID(aws.StringValue(message.RoleCredentials.CredentialsId))
+			// Refresh domainless gMSA plugin credentials if needed
+			err = checkAndSetDomainlessGMSATaskExecutionRoleCredentialsImpl(iamRoleCredentials, task)
+			if err != nil {
+				seelog.Errorf("Unable to SetDomainlessGMSATaskExecutionRoleCredentials for task %s, err: %v messageId: %s", taskArn, err, messageId)
+				return errors.Wrap(err, "unable to SetDomainlessGMSATaskExecutionRoleCredentials")
+			}
 		}
 	}
 

@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/aws/amazon-ecs-agent/agent/acs/model/ecsacs"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/acs/model/ecsacs"
 	"github.com/aws/aws-sdk-go/aws"
 )
 
@@ -48,9 +48,9 @@ type AppMesh struct {
 	ProxyEgressPort string
 	// AppPorts is the port number that application is listening on
 	AppPorts []string
-	// EgressIgnoredIPs is the list of ports for which egress traffic will be ignored
+	// EgressIgnoredIPs is the list of IPs for which egress traffic will be ignored
 	EgressIgnoredIPs []string
-	// EgressIgnoredPorts is the list of IPs for which egress traffic will be ignored
+	// EgressIgnoredPorts is the list of ports for which egress traffic will be ignored
 	EgressIgnoredPorts []string
 }
 

@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -16,148 +17,87 @@
 package config
 
 import (
-	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"unsafe"
 
-	"github.com/pkg/errors"
-
-	"golang.org/x/sys/windows/registry"
-
-	"github.com/aws/amazon-ecs-agent/agent/statemanager/dependencies"
 	"github.com/aws/amazon-ecs-agent/agent/utils"
+
 	"github.com/cihub/seelog"
+	"golang.org/x/sys/windows/registry"
 )
 
-var winRegistry dependencies.WindowsRegistry
+const (
+	// envSkipWindowsServerVersionCheck is an environment setting that can be used
+	// to skip the windows server version check. This is useful for testing and
+	// should not be set for any non-test use-case.
+	envSkipWindowsServerVersionCheck = "ZZZ_SKIP_WINDOWS_SERVER_VERSION_CHECK_NOT_SUPPORTED_IN_PRODUCTION"
+	gmsaPluginGUID                   = "{859E1386-BDB4-49E8-85C7-3070B13920E1}"
+)
 
-func init() {
-	winRegistry = dependencies.StdRegistry{}
-}
-
-func setWinRegistry(mockRegistry dependencies.WindowsRegistry) {
-	winRegistry = mockRegistry
-}
-
-func getInstallationType(installationType string) (string, error) {
-	switch installationType {
-	case installationTypeFull:
-		return "FULL", nil
-	case installationTypeCore:
-		return "CORE", nil
-	default:
-		return "", errors.Errorf("unsupported Installation type:%s", installationType)
-	}
-}
-
-func getReleaseIdForSACReleases(productName string) (string, error) {
-	if strings.HasPrefix(productName, windowsServer2019) {
-		return "2019", nil
-	} else if strings.HasPrefix(productName, windowsServer2016) {
-		return "2016", nil
-	}
-	err := seelog.Errorf("unsupported productName:%s for Windows SAC Release", productName)
-	return "", err
-}
-
-func getReleaseIdForLTSCReleases(releaseId string) (string, error) {
-	switch releaseId {
-	case releaseId2004SAC:
-		return releaseId2004SAC, nil
-	case releaseId1909SAC:
-		return releaseId1909SAC, nil
-	default:
-		return "", errors.Errorf("unsupported ReleaseId:%s for Windows LTSC Release", releaseId)
-	}
-}
-
-// GetOperatingSystemFamily() reads the NT current version from windows registry and constructs operating system family string
-// In case of any exception this method just returns "windows" as operating system type.
-func GetOperatingSystemFamily() string {
-	key, err := winRegistry.OpenKey(ecsWinRegistryRootKey, ecsWinRegistryRootPath, registry.QUERY_VALUE)
-	if err != nil {
-		seelog.Errorf("Unable to open Windows registry key to determine Windows version: %v", err)
-		return unsupportedWindowsOS
-	}
-	defer key.Close()
-
-	productName, _, err := key.GetStringValue("ProductName")
-	if err != nil {
-		seelog.Errorf("Unable to read registry key, ProductName: %v", err)
-		return unsupportedWindowsOS
-	}
-	installationType, _, err := key.GetStringValue("InstallationType")
-	if err != nil {
-		seelog.Errorf("Unable to read registry key, InstallationType: %v", err)
-		return unsupportedWindowsOS
-	}
-	iType, err := getInstallationType(installationType)
-	if err != nil {
-		seelog.Errorf("Invalid Installation type found: %v", err)
-		return unsupportedWindowsOS
-	}
-
-	releaseId := ""
-	if strings.HasPrefix(productName, windowsServerDataCenter) {
-		releaseIdFromRegistry, _, err := key.GetStringValue("ReleaseId")
-		if err != nil {
-			seelog.Errorf("Unable to read registry key, ReleaseId: %v", err)
-			return unsupportedWindowsOS
-		}
-
-		releaseId, err = getReleaseIdForLTSCReleases(releaseIdFromRegistry)
-		if err != nil {
-			seelog.Errorf("Failed to construct releaseId for Windows LTSC, Error: %v", err)
-			return unsupportedWindowsOS
-		}
-	} else {
-		releaseId, err = getReleaseIdForSACReleases(productName)
-		if err != nil {
-			seelog.Errorf("Failed to construct releaseId for Windows SAC, Error: %v", err)
-			return unsupportedWindowsOS
-		}
-	}
-	return fmt.Sprintf(osTypeFormat, releaseId, iType)
-}
+var (
+	fnQueryDomainlessGmsaPluginSubKeys = queryDomainlessGmsaPluginSubKeys
+)
 
 // parseGMSACapability is used to determine if gMSA support can be enabled
-func parseGMSACapability() bool {
+func parseGMSACapability() BooleanDefaultFalse {
 	envStatus := utils.ParseBool(os.Getenv("ECS_GMSA_SUPPORTED"), true)
 	return checkDomainJoinWithEnvOverride(envStatus)
 }
 
+// parseGMSADomainlessCapability is used to determine if gMSA domainless support can be enabled
+func parseGMSADomainlessCapability() BooleanDefaultFalse {
+	envStatus := utils.ParseBool(os.Getenv("ECS_GMSA_SUPPORTED"), false)
+	if envStatus {
+		// gmsaDomainless is not supported on Windows 2016
+		isWindows2016, err := IsWindows2016()
+		if err != nil || isWindows2016 {
+			return BooleanDefaultFalse{Value: ExplicitlyDisabled}
+		}
+
+		// gmsaDomainless is not supported if the plugin is not installed on the instance
+		installed, err := isDomainlessGmsaPluginInstalled()
+		if err != nil || !installed {
+			return BooleanDefaultFalse{Value: ExplicitlyDisabled}
+		}
+		return BooleanDefaultFalse{Value: ExplicitlyEnabled}
+	}
+	return BooleanDefaultFalse{Value: ExplicitlyDisabled}
+}
+
 // parseFSxWindowsFileServerCapability is used to determine if fsxWindowsFileServer support can be enabled
-func parseFSxWindowsFileServerCapability() bool {
+func parseFSxWindowsFileServerCapability() BooleanDefaultFalse {
 	// fsxwindowsfileserver is not supported on Windows 2016 and non-domain-joined container instances
-	status, err := isWindows2016()
+	status, err := IsWindows2016()
 	if err != nil || status == true {
-		return false
+		return BooleanDefaultFalse{Value: ExplicitlyDisabled}
 	}
 
 	envStatus := utils.ParseBool(os.Getenv("ECS_FSX_WINDOWS_FILE_SERVER_SUPPORTED"), true)
 	return checkDomainJoinWithEnvOverride(envStatus)
 }
 
-func checkDomainJoinWithEnvOverride(envStatus bool) bool {
+func checkDomainJoinWithEnvOverride(envStatus bool) BooleanDefaultFalse {
 	if envStatus {
 		// Check if domain join check override is present
 		skipDomainJoinCheck := utils.ParseBool(os.Getenv(envSkipDomainJoinCheck), false)
 		if skipDomainJoinCheck {
 			seelog.Debug("Skipping domain join validation based on environment override")
-			return true
+			return BooleanDefaultFalse{Value: ExplicitlyEnabled}
 		}
 		// check if container instance is domain joined.
 		// If container instance is not domain joined, explicitly disable feature configuration.
 		status, err := isDomainJoined()
-		if err == nil && status == true {
-			return true
+		if err != nil {
+			seelog.Errorf("Unable to determine valid domain join with err: %v", err)
 		}
-		seelog.Errorf("Unable to determine valid domain join: %v", err)
+		if status == true {
+			return BooleanDefaultFalse{Value: ExplicitlyEnabled}
+		}
 	}
-
-	return false
+	return BooleanDefaultFalse{Value: ExplicitlyDisabled}
 }
 
 // isDomainJoined is used to validate if container instance is part of a valid active directory.
@@ -179,25 +119,63 @@ func isDomainJoined() (bool, error) {
 	return status == syscall.NetSetupDomainName, nil
 }
 
-// isWindows2016 is used to check if container instance is versioned Windows 2016
-// Reference: https://godoc.org/golang.org/x/sys/windows/registry
-var isWindows2016 = func() (bool, error) {
-	key, err := winRegistry.OpenKey(ecsWinRegistryRootKey, ecsWinRegistryRootPath, registry.QUERY_VALUE)
+// Making it visible for unit testing
+var execCommand = exec.Command
 
-	if err != nil {
-		seelog.Errorf("unable to open Windows registry key to determine Windows version: %v", err)
-		return false, err
-	}
-	defer key.Close()
-
-	version, _, err := key.GetStringValue("ProductName")
-	if err != nil {
-		seelog.Errorf("unable to read current version from Windows registry: %v", err)
-		return false, err
+var IsWindows2016 = func() (bool, error) {
+	// Check for environment override before proceeding.
+	envSkipWindowsServerVersionCheck := utils.ParseBool(os.Getenv(envSkipWindowsServerVersionCheck), false)
+	if envSkipWindowsServerVersionCheck {
+		seelog.Debug("Skipping windows server version check based on environment override")
+		return false, nil
 	}
 
-	if strings.HasPrefix(version, "Windows Server 2016") {
-		return true, nil
+	cmd := "systeminfo | findstr /B /C:\"OS Name\""
+	out, err := execCommand("powershell", "-Command", cmd).CombinedOutput()
+	if err != nil {
+		return false, err
+	}
+
+	str := string(out)
+	isWS2016 := strings.Contains(str, "Microsoft Windows Server 2016 Datacenter")
+
+	return isWS2016, nil
+}
+
+var queryDomainlessGmsaPluginSubKeys = func() ([]string, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `SYSTEM\CurrentControlSet\Control\CCG\COMClasses\`, registry.READ)
+	if err != nil {
+		seelog.Errorf("Failed to open registry key SYSTEM\\CurrentControlSet\\Control\\CCG\\COMClasses with error: %v", err)
+		return nil, err
+	}
+	defer k.Close()
+	stat, err := k.Stat()
+	if err != nil {
+		seelog.Errorf("Failed to stat registry key SYSTEM\\CurrentControlSet\\Control\\CCG\\COMClasses with error: %v", err)
+		return nil, err
+	}
+	subKeys, err := k.ReadSubKeyNames(int(stat.SubKeyCount))
+	if err != nil {
+		seelog.Errorf("Failed to read subkeys of SYSTEM\\CurrentControlSet\\Control\\CCG\\COMClasses with error: %v", err)
+		return nil, err
+	}
+
+	seelog.Debugf("gMSA Subkeys are %+v", subKeys)
+	return subKeys, nil
+}
+
+// This function queries all gmsa plugin subkeys to check whether the Amazon ECS Plugin GUID is present.
+func isDomainlessGmsaPluginInstalled() (bool, error) {
+	subKeys, err := fnQueryDomainlessGmsaPluginSubKeys()
+	if err != nil {
+		seelog.Errorf("Failed to query gmsa plugin subkeys")
+		return false, err
+	}
+
+	for _, subKey := range subKeys {
+		if subKey == gmsaPluginGUID {
+			return true, nil
+		}
 	}
 
 	return false, nil

@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -31,17 +32,17 @@ import (
 
 	apicontainer "github.com/aws/amazon-ecs-agent/agent/api/container"
 	apicontainerstatus "github.com/aws/amazon-ecs-agent/agent/api/container/status"
-	apierrors "github.com/aws/amazon-ecs-agent/agent/api/errors"
 	"github.com/aws/amazon-ecs-agent/agent/config"
-	"github.com/aws/amazon-ecs-agent/agent/credentials"
 	"github.com/aws/amazon-ecs-agent/agent/dockerclient"
 	mock_sdkclient "github.com/aws/amazon-ecs-agent/agent/dockerclient/sdkclient/mocks"
 	mock_sdkclientfactory "github.com/aws/amazon-ecs-agent/agent/dockerclient/sdkclientfactory/mocks"
 	"github.com/aws/amazon-ecs-agent/agent/ec2"
 	mock_ecr "github.com/aws/amazon-ecs-agent/agent/ecr/mocks"
 	ecrapi "github.com/aws/amazon-ecs-agent/agent/ecr/model/ecr"
-	"github.com/aws/amazon-ecs-agent/agent/utils/retry"
-	mock_ttime "github.com/aws/amazon-ecs-agent/agent/utils/ttime/mocks"
+	apierrors "github.com/aws/amazon-ecs-agent/ecs-agent/api/errors"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/retry"
+	mock_ttime "github.com/aws/amazon-ecs-agent/ecs-agent/utils/ttime/mocks"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/docker/docker/api/types"
@@ -394,7 +395,7 @@ func TestCreateContainerTimeout(t *testing.T) {
 	wait.Add(1)
 	hostConfig := &dockercontainer.HostConfig{Resources: dockercontainer.Resources{Memory: 100}}
 	mockDockerSDK.EXPECT().ContainerCreate(gomock.Any(), &dockercontainer.Config{}, hostConfig,
-		&network.NetworkingConfig{}, "containerName").Do(func(v, w, x, y, z interface{}) {
+		&network.NetworkingConfig{}, gomock.Any(), "containerName").Do(func(u, v, w, x, y, z interface{}) {
 		wait.Wait()
 	}).MaxTimes(1).Return(dockercontainer.ContainerCreateCreatedBody{}, errors.New("test error"))
 	ctx, cancel := context.WithCancel(context.TODO())
@@ -412,12 +413,12 @@ func TestCreateContainer(t *testing.T) {
 	name := "containerName"
 	hostConfig := &dockercontainer.HostConfig{Resources: dockercontainer.Resources{Memory: 100}}
 	gomock.InOrder(
-		mockDockerSDK.EXPECT().ContainerCreate(gomock.Any(), gomock.Any(), hostConfig, gomock.Any(), name).
-			Do(func(v, w, x, y, z interface{}) {
-				assert.True(t, reflect.DeepEqual(x, hostConfig),
-					"Mismatch in create container HostConfig, %v != %v", y, hostConfig)
-				assert.Equal(t, z, name,
-					"Mismatch in create container options, %s != %s", z, name)
+		mockDockerSDK.EXPECT().ContainerCreate(gomock.Any(), gomock.Any(), hostConfig, gomock.Any(), gomock.Any(), name).
+			Do(func(u, v, actualHostConfig, x, y, actualName interface{}) {
+				assert.True(t, reflect.DeepEqual(actualHostConfig, hostConfig),
+					"Mismatch in create container HostConfig, %v != %v", actualHostConfig, hostConfig)
+				assert.Equal(t, actualName, name,
+					"Mismatch in create container options, %s != %s", actualName, name)
 			}).Return(dockercontainer.ContainerCreateCreatedBody{ID: "id"}, nil),
 		mockDockerSDK.EXPECT().ContainerInspect(gomock.Any(), "id").
 			Return(types.ContainerJSON{
@@ -517,7 +518,7 @@ func TestStartContainerExecTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	err := client.StartContainerExec(ctx, "id", xContainerShortTimeout)
+	err := client.StartContainerExec(ctx, "id", types.ExecStartCheck{Detach: true, Tty: false}, xContainerShortTimeout)
 	assert.NotNil(t, err, "Expected error for start container exec")
 	assert.Equal(t, "DockerTimeoutError", err.(apierrors.NamedError).ErrorName(), "Wrong error type")
 	wait.Done()
@@ -538,7 +539,7 @@ func TestStartContainerExec(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	err := client.StartContainerExec(ctx, "id", dockerclient.ContainerExecStartTimeout)
+	err := client.StartContainerExec(ctx, "id", types.ExecStartCheck{Detach: true, Tty: false}, dockerclient.ContainerExecStartTimeout)
 	assert.NoError(t, err)
 }
 
@@ -762,39 +763,6 @@ func TestInspectContainer(t *testing.T) {
 	assert.True(t, reflect.DeepEqual(&containerOutput, container))
 }
 
-func TestTopContainerTimeout(t *testing.T) {
-	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
-	defer done()
-
-	wait := &sync.WaitGroup{}
-	wait.Add(1)
-	mockDockerSDK.EXPECT().ContainerTop(gomock.Any(), "id", gomock.Any()).Do(func(ctx context.Context, x interface{}, y interface{}) {
-		wait.Wait()
-	}).MaxTimes(1).Return(dockercontainer.ContainerTopOKBody{}, nil)
-
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
-	_, err := client.TopContainer(ctx, "id", xContainerShortTimeout)
-	assert.Error(t, err, "Expected error for top timeout")
-	assert.Equal(t, "DockerTimeoutError", err.(apierrors.NamedError).ErrorName())
-	wait.Done()
-}
-
-func TestTopContainer(t *testing.T) {
-	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
-	defer done()
-
-	topOutput := dockercontainer.ContainerTopOKBody{}
-	gomock.InOrder(
-		mockDockerSDK.EXPECT().ContainerTop(gomock.Any(), "id", gomock.Any()).Return(topOutput, nil),
-	)
-	ctx, cancel := context.WithCancel(context.TODO())
-	defer cancel()
-	topResponse, err := client.TopContainer(ctx, "id", dockerclient.TopContainerTimeout, "pid")
-	assert.NoError(t, err)
-	assert.Equal(t, &topOutput, topResponse)
-}
-
 func TestContainerEvents(t *testing.T) {
 	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
 	defer done()
@@ -995,6 +963,74 @@ func TestContainerEventsError(t *testing.T) {
 	}
 }
 
+func TestSetExitCodeFromEvent(t *testing.T) {
+	var (
+		exitCodeInt    = 42
+		exitCodeStr    = "42"
+		altExitCodeInt = 1
+	)
+
+	defaultEvent := &events.Message{
+		Status: dockerContainerDieEvent,
+		Actor: events.Actor{
+			Attributes: map[string]string{
+				dockerContainerEventExitCodeAttribute: exitCodeStr,
+			},
+		},
+	}
+
+	testCases := []struct {
+		name             string
+		event            *events.Message
+		metadata         DockerContainerMetadata
+		expectedExitCode *int
+	}{
+		{
+			name:             "exit code set from event",
+			event:            defaultEvent,
+			metadata:         DockerContainerMetadata{},
+			expectedExitCode: &exitCodeInt,
+		},
+		{
+			name:  "exit code not set from event when metadata already has it",
+			event: defaultEvent,
+			metadata: DockerContainerMetadata{
+				ExitCode: &altExitCodeInt,
+			},
+			expectedExitCode: &altExitCodeInt,
+		},
+		{
+			name: "exit code not set from event when event does not has it",
+			event: &events.Message{
+				Status: dockerContainerDieEvent,
+				Actor:  events.Actor{},
+			},
+			metadata:         DockerContainerMetadata{},
+			expectedExitCode: nil,
+		},
+		{
+			name: "exit code not set from event when event has invalid exit code",
+			event: &events.Message{
+				Status: dockerContainerDieEvent,
+				Actor: events.Actor{
+					Attributes: map[string]string{
+						dockerContainerEventExitCodeAttribute: "invalid",
+					},
+				},
+			},
+			metadata:         DockerContainerMetadata{},
+			expectedExitCode: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			setExitCodeFromEvent(tc.event, &tc.metadata)
+			assert.Equal(t, tc.expectedExitCode, tc.metadata.ExitCode)
+		})
+	}
+}
+
 func TestDockerVersion(t *testing.T) {
 	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
 	defer done()
@@ -1006,6 +1042,34 @@ func TestDockerVersion(t *testing.T) {
 	str, err := client.Version(ctx, dockerclient.VersionTimeout)
 	assert.NoError(t, err)
 	assert.Equal(t, "1.6.0", str, "Got unexpected version string: "+str)
+}
+
+func TestSystemPing(t *testing.T) {
+	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
+	defer done()
+
+	mockDockerSDK.EXPECT().Ping(gomock.Any()).Return(types.Ping{APIVersion: "test_docker_api"}, nil)
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+	pingResponse := client.SystemPing(ctx, dockerclient.InfoTimeout)
+
+	assert.NoError(t, pingResponse.Error)
+	assert.Equal(t, "test_docker_api", pingResponse.Response.APIVersion)
+}
+
+func TestSystemPingError(t *testing.T) {
+	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
+	defer done()
+
+	mockDockerSDK.EXPECT().Ping(gomock.Any()).Return(types.Ping{}, errors.New("test error"))
+
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+	pingResponse := client.SystemPing(ctx, dockerclient.InfoTimeout)
+
+	assert.Error(t, pingResponse.Error)
+	assert.Nil(t, pingResponse.Response)
 }
 
 func TestDockerInfo(t *testing.T) {
@@ -1223,6 +1287,18 @@ func TestUnavailableVersionError(t *testing.T) {
 	}
 }
 
+func waitForStatsChanClose(statsChan <-chan *types.StatsJSON) (closed bool) {
+	i := 0
+	for range statsChan {
+		if i == 10 {
+			return false
+		}
+		i++
+		time.Sleep(time.Millisecond * 10)
+	}
+	return true
+}
+
 func TestStatsNormalExit(t *testing.T) {
 	mockDockerSDK, client, _, _, _, done := dockerClientSetup(t)
 	defer done()
@@ -1240,6 +1316,12 @@ func TestStatsNormalExit(t *testing.T) {
 
 	assert.Equal(t, uint64(50), newStat.MemoryStats.Usage)
 	assert.Equal(t, uint64(100), newStat.CPUStats.SystemUsage)
+
+	// stop container stats
+	cancel()
+	// verify stats chan was closed to avoid goroutine leaks
+	closed := waitForStatsChanClose(stats)
+	assert.True(t, closed, "stats channel was not properly closed")
 }
 
 func TestStatsErrorReading(t *testing.T) {
@@ -1253,9 +1335,12 @@ func TestStatsErrorReading(t *testing.T) {
 	}, errors.New("test error"))
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	_, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
+	statsC, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
 
 	assert.Error(t, <-errC)
+	// verify stats chan was closed to avoid goroutine leaks
+	closed := waitForStatsChanClose(statsC)
+	assert.True(t, closed, "stats channel was not properly closed")
 }
 
 func TestStatsErrorDecoding(t *testing.T) {
@@ -1269,8 +1354,11 @@ func TestStatsErrorDecoding(t *testing.T) {
 	}, nil)
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
-	_, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
+	statsC, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
 	assert.Error(t, <-errC)
+	// verify stats chan was closed to avoid goroutine leaks
+	closed := waitForStatsChanClose(statsC)
+	assert.True(t, closed, "stats channel was not properly closed")
 }
 
 func TestStatsClientError(t *testing.T) {
@@ -1286,9 +1374,9 @@ func TestStatsClientError(t *testing.T) {
 	statsC, errC := client.Stats(ctx, "foo", dockerclient.StatsInactivityTimeout)
 	// should get an error from the channel
 	err := <-errC
-	// stats channel should be closed (ok=false)
-	_, ok := <-statsC
-	assert.False(t, ok)
+	// stats channel should be closed
+	closed := waitForStatsChanClose(statsC)
+	assert.True(t, closed, "stats channel was not properly closed")
 	assert.Error(t, err)
 }
 

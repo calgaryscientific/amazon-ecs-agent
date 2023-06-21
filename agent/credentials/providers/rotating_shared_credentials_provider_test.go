@@ -1,3 +1,4 @@
+//go:build unit
 // +build unit
 
 // Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
@@ -29,7 +30,16 @@ func TestNewRotatingSharedCredentialsProvider(t *testing.T) {
 	p := NewRotatingSharedCredentialsProvider()
 	require.Equal(t, time.Minute, p.RotationInterval)
 	require.Equal(t, "default", p.sharedCredentialsProvider.Profile)
-	require.Equal(t, "/rotatingcreds/credentials", p.sharedCredentialsProvider.Filename)
+	require.Equal(t, defaultRotatingCredentialsFilename, p.sharedCredentialsProvider.Filename)
+}
+
+func TestNewRotatingSharedCredentialsProviderExternal(t *testing.T) {
+	os.Setenv("ECS_ALTERNATE_CREDENTIAL_PROFILE", "external")
+	defer os.Unsetenv("ECS_ALTERNATE_CREDENTIAL_PROFILE")
+	p := NewRotatingSharedCredentialsProvider()
+	require.Equal(t, time.Minute, p.RotationInterval)
+	require.Equal(t, "external", p.sharedCredentialsProvider.Profile)
+	require.Equal(t, defaultRotatingCredentialsFilename, p.sharedCredentialsProvider.Filename)
 }
 
 func TestRotatingSharedCredentialsProvider_RetrieveFail_BadPath(t *testing.T) {
