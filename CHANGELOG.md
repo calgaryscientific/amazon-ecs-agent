@@ -1,4 +1,28 @@
 # Changelog
+## 1.73.1
+* Fix - Revert task resource accounting to avoid tasks stuck in PENDING on oversubscribed instance. [#3781](https://github.com/aws/amazon-ecs-agent/pull/3781)
+* Code Quality Improvement - Improve test coverage of v2, v3, and v4 container stats endpoints [#3758](https://github.com/aws/amazon-ecs-agent/pull/3758)
+* Code Quality Improvement - Improve test coverage of v2, v3, and v4 task stats endpoints. [#3761](https://github.com/aws/amazon-ecs-agent/pull/3761)
+* Code Quality Improvement - Move ECSTaskProtectionSDK interface to ecs-agent [#3756](https://github.com/aws/amazon-ecs-agent/pull/3756)
+* Code Quality Improvement - Downgrade the docker version used in the ecs-agent/go.mod to v20.10.24 [#3767](https://github.com/aws/amazon-ecs-agent/pull/3767)
+* Enhancement - Add the EBS volume metrics collector to ecs-agent. [#3766](https://github.com/aws/amazon-ecs-agent/pull/3766)
+* Code Quality Improvement - Refactor ACS attach instance ENI message handling [#3765](https://github.com/aws/amazon-ecs-agent/pull/3765)
+* Bug - Skip sending internal task events to ECS control plane [#3772](https://github.com/aws/amazon-ecs-agent/pull/3772)
+* Code Quality Improvement - Move TMDS task protection types to ecs-agent (refactoring only). [#3764](https://github.com/aws/amazon-ecs-agent/pull/3764)
+* Code Quality Improvement - Add missing copyright header to files [#3777](https://github.com/aws/amazon-ecs-agent/pull/3777)
+
+## 1.73.0
+* Feature - Task Resource Accounting - Adds host resource manager in docker task engine which keeps account of host resources for tasks started on the host. Removes task serialization and uses host resource manager to start tasks on the host as soon as resources become available for a task. [#3684](https://github.com/aws/amazon-ecs-agent/pull/3684) [#3706](https://github.com/aws/amazon-ecs-agent/pull/3706) [#3700](https://github.com/aws/amazon-ecs-agent/pull/3700) [#3723](https://github.com/aws/amazon-ecs-agent/pull/3723) [#3741](https://github.com/aws/amazon-ecs-agent/pull/3741) [#3747](https://github.com/aws/amazon-ecs-agent/pull/3747) [#3750](https://github.com/aws/amazon-ecs-agent/pull/3750)
+* Enhancement - Update containernetworking/cni dependency to v1.1.2 and the vpc-cni plugin version [#3702](https://github.com/aws/amazon-ecs-agent/pull/3702)
+* Code Quality Improvement - Refactor ACS attach task ENI message handling [#3744](https://github.com/aws/amazon-ecs-agent/pull/3744)
+* Code Quality Improvement - Add "more than one ECS failure" case to Task Protection TMDS tests [#3749](https://github.com/aws/amazon-ecs-agent/pull/3749)
+* Code Quality Improvement - Move eventstream to /ecs-agent and remove /agent/wsclient [#3746](https://github.com/aws/amazon-ecs-agent/pull/3746)
+* Code Quality Improvement - Move TCS Client to ecs-agent module, and switch to use wsclient in ecs-agent module [#3726](https://github.com/aws/amazon-ecs-agent/pull/3726)
+* Code Quality Improvement - Add tests for GetTaskProtection API and UpdateTaskProtection API to high-level TMDS tests [3739](https://github.com/aws/amazon-ecs-agent/pull/3739) [#3740](https://github.com/aws/amazon-ecs-agent/pull/3740)
+* Code Quality Improvement - Refactor ACS heartbeat message handling [#3724](https://github.com/aws/amazon-ecs-agent/pull/3724)
+* Code Quality Improvement - Move v4 task metadata handler to ecs-agent module with a more generic implementation [#3733](https://github.com/aws/amazon-ecs-agent/pull/3733)
+* Fix - Make task not found error message for task protection endpoint consistent with Fargate [#3748](https://github.com/aws/amazon-ecs-agent/pull/3748)
+
 ## 1.72.0
 * Feature - Add domainless gMSA support on windows/linux [#3735](https://github.com/aws/amazon-ecs-agent/pull/3735)
 * Enhancement - Update golang.org/x/net to v0.8.0 [#3730](https://github.com/aws/amazon-ecs-agent/pull/3730)

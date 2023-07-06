@@ -21,23 +21,19 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/aws/amazon-ecs-agent/agent/api"
-	"github.com/aws/amazon-ecs-agent/agent/api/ecsclient"
 	apitask "github.com/aws/amazon-ecs-agent/agent/api/task"
-	"github.com/aws/amazon-ecs-agent/agent/ecs_client/model/ecs"
 	"github.com/aws/amazon-ecs-agent/agent/engine/dockerstate"
-	"github.com/aws/amazon-ecs-agent/agent/handlers/agentapi/taskprotection/v1/types"
 	v3 "github.com/aws/amazon-ecs-agent/agent/handlers/v3"
-	"github.com/aws/amazon-ecs-agent/agent/httpclient"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/credentials"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/ecs_client/model/ecs"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/logger"
 	loggerfield "github.com/aws/amazon-ecs-agent/ecs-agent/logger/field"
+	tpinterface "github.com/aws/amazon-ecs-agent/ecs-agent/tmds/handlers/taskprotection/v1/handlers"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/tmds/handlers/taskprotection/v1/types"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/tmds/handlers/utils"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/aws/session"
 )
 
 const (
@@ -47,6 +43,7 @@ const (
 	// must be lower than server write timeout
 	ecsCallTimeout       = 4 * time.Second
 	ecsCallTimedOutError = "Timed out calling ECS Task Protection API"
+	taskNotFoundErrorMsg = "Failed to find a task for the request"
 )
 
 // TaskProtectionPath Returns endpoint path for UpdateTaskProtection API
@@ -62,17 +59,10 @@ type TaskProtectionRequest struct {
 	ExpiresInMinutes  *int64
 }
 
-// TaskProtectionClientFactory implements TaskProtectionClientFactoryInterface
-type TaskProtectionClientFactory struct {
-	Region             string
-	Endpoint           string
-	AcceptInsecureCert bool
-}
-
 // UpdateTaskProtectionHandler returns an HTTP request handler function for
 // UpdateTaskProtection API
 func UpdateTaskProtectionHandler(state dockerstate.TaskEngineState, credentialsManager credentials.Manager,
-	factory TaskProtectionClientFactoryInterface, cluster string) func(http.ResponseWriter, *http.Request) {
+	factory tpinterface.TaskProtectionClientFactoryInterface, cluster string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		updateTaskProtectionRequestType := "api/UpdateTaskProtection/v1"
 
@@ -125,7 +115,7 @@ func UpdateTaskProtectionHandler(state dockerstate.TaskEngineState, credentialsM
 				updateTaskProtectionRequestType)
 			return
 		}
-		ecsClient := factory.newTaskProtectionClient(taskRoleCredential)
+		ecsClient := factory.NewTaskProtectionClient(taskRoleCredential)
 
 		ctx, cancel := context.WithTimeout(r.Context(), ecsCallTimeout)
 		defer cancel()
@@ -192,7 +182,7 @@ func UpdateTaskProtectionHandler(state dockerstate.TaskEngineState, credentialsM
 
 // GetTaskProtectionHandler returns a handler function for GetTaskProtection API
 func GetTaskProtectionHandler(state dockerstate.TaskEngineState, credentialsManager credentials.Manager,
-	factory TaskProtectionClientFactoryInterface, cluster string) func(http.ResponseWriter, *http.Request) {
+	factory tpinterface.TaskProtectionClientFactoryInterface, cluster string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		getTaskProtectionRequestType := "api/GetTaskProtection/v1"
 
@@ -221,7 +211,7 @@ func GetTaskProtectionHandler(state dockerstate.TaskEngineState, credentialsMana
 			return
 		}
 
-		ecsClient := factory.newTaskProtectionClient(taskRoleCredential)
+		ecsClient := factory.NewTaskProtectionClient(taskRoleCredential)
 
 		ctx, cancel := context.WithTimeout(r.Context(), ecsCallTimeout)
 		defer cancel()
@@ -285,21 +275,6 @@ func GetTaskProtectionHandler(state dockerstate.TaskEngineState, credentialsMana
 	}
 }
 
-// Helper function for retrieving credential from credentials manager and create ecs client
-func (factory TaskProtectionClientFactory) newTaskProtectionClient(taskRoleCredential credentials.TaskIAMRoleCredentials) api.ECSTaskProtectionSDK {
-	taskCredential := taskRoleCredential.GetIAMRoleCredentials()
-	cfg := aws.NewConfig().
-		WithCredentials(awscreds.NewStaticCredentials(taskCredential.AccessKeyID,
-			taskCredential.SecretAccessKey,
-			taskCredential.SessionToken)).
-		WithRegion(factory.Region).
-		WithHTTPClient(httpclient.New(ecsclient.RoundtripTimeout, factory.AcceptInsecureCert)).
-		WithEndpoint(factory.Endpoint)
-
-	ecsClient := ecs.New(session.Must(session.NewSession()), cfg)
-	return ecsClient
-}
-
 // Helper function to parse error to get ErrorCode, ExceptionMessage, HttpStatusCode, RequestID.
 // RequestID will be empty if the request is not able to reach AWS
 func getErrorCodeAndStatusCode(err error) (string, string, int, *string) {
@@ -330,7 +305,7 @@ func getTaskFromRequest(state dockerstate.TaskEngineState, r *http.Request) (*ap
 		logger.Error("Failed to find task ARN for task protection request", logger.Fields{
 			loggerfield.Error: err,
 		})
-		return nil, http.StatusNotFound, ecs.ErrCodeResourceNotFoundException, errors.New("Invalid request: no task was found")
+		return nil, http.StatusNotFound, ecs.ErrCodeResourceNotFoundException, errors.New(taskNotFoundErrorMsg)
 	}
 
 	task, found := state.TaskByArn(taskARN)
@@ -338,7 +313,7 @@ func getTaskFromRequest(state dockerstate.TaskEngineState, r *http.Request) (*ap
 		logger.Critical("No task was found for taskARN for task protection request", logger.Fields{
 			loggerfield.TaskARN: taskARN,
 		})
-		return nil, http.StatusInternalServerError, ecs.ErrCodeServerException, errors.New("Failed to find a task for the request")
+		return nil, http.StatusInternalServerError, ecs.ErrCodeServerException, errors.New(taskNotFoundErrorMsg)
 	}
 
 	return task, http.StatusOK, "", nil

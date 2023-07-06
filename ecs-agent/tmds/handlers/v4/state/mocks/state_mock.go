@@ -62,3 +62,33 @@ func (mr *MockAgentStateMockRecorder) GetContainerMetadata(arg0 interface{}) *go
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContainerMetadata", reflect.TypeOf((*MockAgentState)(nil).GetContainerMetadata), arg0)
 }
+
+// GetTaskMetadata mocks base method.
+func (m *MockAgentState) GetTaskMetadata(arg0 string) (state.TaskResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetTaskMetadata", arg0)
+	ret0, _ := ret[0].(state.TaskResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetTaskMetadata indicates an expected call of GetTaskMetadata.
+func (mr *MockAgentStateMockRecorder) GetTaskMetadata(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetTaskMetadata", reflect.TypeOf((*MockAgentState)(nil).GetTaskMetadata), arg0)
+}
+
+// GetTaskMetadataWithTags mocks base method.
+func (m *MockAgentState) GetTaskMetadataWithTags(arg0 string) (state.TaskResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetTaskMetadataWithTags", arg0)
+	ret0, _ := ret[0].(state.TaskResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetTaskMetadataWithTags indicates an expected call of GetTaskMetadataWithTags.
+func (mr *MockAgentStateMockRecorder) GetTaskMetadataWithTags(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetTaskMetadataWithTags", reflect.TypeOf((*MockAgentState)(nil).GetTaskMetadataWithTags), arg0)
+}

@@ -20,10 +20,10 @@ import (
 	"github.com/aws/amazon-ecs-agent/agent/api"
 	"github.com/aws/amazon-ecs-agent/agent/config"
 	"github.com/aws/amazon-ecs-agent/agent/engine"
-	"github.com/aws/amazon-ecs-agent/agent/eventstream"
 	"github.com/aws/amazon-ecs-agent/agent/stats"
-	"github.com/aws/amazon-ecs-agent/agent/tcs/model/ecstcs"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/doctor"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/eventstream"
+	"github.com/aws/amazon-ecs-agent/ecs-agent/tcs/model/ecstcs"
 	"github.com/aws/amazon-ecs-agent/ecs-agent/utils/ttime"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/pkg/errors"
@@ -37,7 +37,6 @@ type TelemetrySessionParams struct {
 	CredentialProvider            *credentials.Credentials
 	Cfg                           *config.Config
 	DeregisterInstanceEventStream *eventstream.EventStream
-	AcceptInvalidCert             bool
 	ECSClient                     api.ECSClient
 	TaskEngine                    engine.TaskEngine
 	StatsEngine                   *stats.DockerStatsEngine
